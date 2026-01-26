@@ -42,13 +42,13 @@ def getVideoFfmpeg(self, url, filename):
 
     if SEGMENT_SIZE is not None:
         # Segment by file size (takes priority over time-based segmentation)
-        username = filename.rsplit('-', maxsplit=2)[0]
+        # Note: segment_size doesn't support strftime, must use sequence number format
+        base_filename = os.path.splitext(filename)[0]
         cmd.extend([
             '-f', 'segment',
             '-reset_timestamps', '1',
             '-segment_size', str(SEGMENT_SIZE),
-            '-strftime', '1',
-            f'{username}-%Y%m%d-%H%M%S{suffix}.{CONTAINER}'
+            f'{base_filename}_%03d{suffix}.{CONTAINER}'
         ])
     elif SEGMENT_TIME is not None:
         # Segment by time
