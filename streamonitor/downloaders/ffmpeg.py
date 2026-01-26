@@ -5,7 +5,7 @@ import sys
 
 import requests.cookies
 from threading import Thread
-from parameters import DEBUG, SEGMENT_TIME, SEGMENT_SIZE, CONTAINER, FFMPEG_PATH, FFMPEG_READRATE
+from parameters import DEBUG, SEGMENT_TIME, CONTAINER, FFMPEG_PATH, FFMPEG_READRATE
 
 
 def getVideoFfmpeg(self, url, filename):
@@ -40,18 +40,7 @@ def getVideoFfmpeg(self, url, filename):
     if hasattr(self, 'filename_extra_suffix'):
         suffix = self.filename_extra_suffix
 
-    if SEGMENT_SIZE is not None:
-        # Segment by file size (takes priority over time-based segmentation)
-        # Note: segment_size doesn't support strftime, must use sequence number format
-        base_filename = os.path.splitext(filename)[0]
-        cmd.extend([
-            '-f', 'segment',
-            '-reset_timestamps', '1',
-            '-segment_size', str(SEGMENT_SIZE),
-            f'{base_filename}_%03d{suffix}.{CONTAINER}'
-        ])
-    elif SEGMENT_TIME is not None:
-        # Segment by time
+    if SEGMENT_TIME is not None:
         username = filename.rsplit('-', maxsplit=2)[0]
         cmd.extend([
             '-f', 'segment',

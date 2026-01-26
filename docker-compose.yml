@@ -1,10 +1,10 @@
 services:
   streamonitor:
-    # If you want to build locally, use this instead the image line below:
-    build: ./
-    # image: streamonitor:latest
+# If you want to build locally, use this instead the image line below:
+#    build: ./
+#    image: streamonitor:latest
 
-    # image: ghcr.io/lossless1024/streamonitor:latest
+    image: ghcr.io/lossless1024/streamonitor:latest
 
     restart: unless-stopped
     environment:
@@ -20,15 +20,17 @@ services:
       #STRMNTR_CONFIRM_DEL: "True"
       STRMNTR_CONFIRM_DEL: "MOBILE"
       # enable theater mode
-      #STRMNTR_THEATER_MODE: "True"
+      #STRMNTR_THEATER_MODE: "True
       # set refresh frequency on streamer page
       STRMNTR_STATUS_FREQ: "5"
       # set refresh frequency on list page
       STRMNTR_LIST_FREQ: "30"
-      # segment videos by file size (default: 800M)
-      STRMNTR_SEGMENT_SIZE: "800M"
-      # segment videos by time in seconds (e.g., 3600 for 1 hour)
-      #STRMNTR_SEGMENT_TIME: "3600"
+      # Web UI skin
+      # Available options:
+      # - kseen715 - 2nd skin, currently broken
+      # - truck-kun (default) - 3rd skin, row oriented
+      # - shaftoverflow - 4th skin, card layout, links in menus
+      STRMNTR_SKIN: "shaftoverflow"
     volumes:
       - ./downloads:/app/downloads
       - ./config.json:/app/config.json

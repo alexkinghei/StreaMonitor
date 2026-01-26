@@ -212,7 +212,12 @@ class StripChat(RoomIdBot):
         m3u8_doc = result.content.decode("utf-8")
         psch, pkey, pdkey = StripChat._getMouflonFromM3U(m3u8_doc)
         if pdkey is None:
-            self.log(f'Failed to get mouflon decryption key')
+            if pkey is not None:
+                self.logger.warning(f'Failed to get mouflon decryption key for pkey={pkey} (psch={psch}). '
+                                  f'Add this key to {self._mouflon_cache_filename} to enable decryption.')
+                self.log(f'Failed to get mouflon decryption key (pkey: {pkey})')
+            else:
+                self.log(f'Failed to get mouflon decryption key (no mouflon tag found in playlist)')
             return []
         variants = super().getPlaylistVariants(m3u_data=m3u8_doc)
         return [variant | {'url': f'{variant["url"]}{"&" if "?" in variant["url"] else "?"}psch={psch}&pkey={pkey}'}
