@@ -1,10 +1,51 @@
 import os.path
+import re
 import environ
 
 
 env = environ.Env()
 if os.path.exists('.env'):
     environ.Env.read_env('.env')
+
+
+def parse_size(size_str):
+    """
+    Parse size string to bytes.
+    Supports formats: "800M", "1G", "838860800", etc.
+    Returns None if size_str is None, empty, or "None" (case-insensitive).
+    """
+    if not size_str:
+        return None
+    
+    size_str = str(size_str).strip()
+    
+    # Handle explicit "None" string
+    if size_str.upper() == 'NONE':
+        return None
+    
+    # Try to parse as integer first (bytes)
+    try:
+        return int(size_str)
+    except ValueError:
+        pass
+    
+    # Parse string format with units (K, M, G, T)
+    match = re.match(r'^(\d+(?:\.\d+)?)\s*([KMGTkmgt]?)$', size_str)
+    if match:
+        value = float(match.group(1))
+        unit = match.group(2).upper() if match.group(2) else ''
+        
+        multipliers = {
+            '': 1,
+            'K': 1024,
+            'M': 1024 * 1024,
+            'G': 1024 * 1024 * 1024,
+            'T': 1024 * 1024 * 1024 * 1024
+        }
+        
+        return int(value * multipliers.get(unit, 1))
+    
+    return None
 
 
 DOWNLOADS_DIR = env.str("STRMNTR_DOWNLOAD_DIR", "downloads")
@@ -55,6 +96,23 @@ FFMPEG_READRATE = env.int("STRMNTR_FFMPEG_READRATE", 1.3)
 # SEGMENT_TIME = '1:00:00'
 SEGMENT_TIME = env.str("STRMNTR_SEGMENT_TIME", None)
 
+# Specify the segment size in bytes
+# If None, the video will be segmented by time (if SEGMENT_TIME is set) or as a single file
+# If both SEGMENT_SIZE and SEGMENT_TIME are set, SEGMENT_SIZE takes priority
+# Example:
+# 800 MB
+# SEGMENT_SIZE = 838860800
+# 1 GB
+# SEGMENT_SIZE = 1073741824
+# You can also use string format with units (M for MB, G for GB)
+# Example:
+# 800 MB
+# SEGMENT_SIZE = '800M'
+# 1 GB
+# SEGMENT_SIZE = '1G'
+SEGMENT_SIZE_STR = env.str("STRMNTR_SEGMENT_SIZE", "800M")
+SEGMENT_SIZE = parse_size(SEGMENT_SIZE_STR) if SEGMENT_SIZE_STR else None
+
 # HTTP Manager configuration
 
 # Bind address for the web server
@@ -67,7 +125,7 @@ WEBSERVER_PORT = env.int("STRMNTR_PORT", 5000)
 # - kseen715 - 2nd skin, currently broken
 # - truck-kun (default) - 3rd skin, row oriented
 # - shaftoverflow - 4th skin, card layout, links in menus
-WEBSERVER_SKIN = env.str("STRMNTR_SKIN", "truck-kun")
+WEBSERVER_SKIN = env.str("STRMNTR_SKIN", "shaftoverflow")
 
 # set frequency in seconds of how often the streamer list will update
 WEB_LIST_FREQUENCY = env.int("STRMNTR_LIST_FREQ", 30)
@@ -86,4 +144,4 @@ WEB_CONFIRM_DELETES = env.str("STRMNTR_CONFIRM_DEL", "MOBILE")
 
 # Password for the web server
 # If empty no auth required, else username admin and choosen password
-WEBSERVER_PASSWORD = env.str("STRMNTR_PASSWORD", "admin")
+WEBSERVER_PASSWORD = env.str("STRMNTR_PASSWORD", "")

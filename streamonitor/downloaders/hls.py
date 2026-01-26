@@ -4,7 +4,7 @@ import subprocess
 from threading import Thread
 from ffmpy import FFmpeg, FFRuntimeError
 from time import sleep
-from parameters import DEBUG, CONTAINER, SEGMENT_TIME, FFMPEG_PATH
+from parameters import DEBUG, CONTAINER, SEGMENT_TIME, SEGMENT_SIZE, FFMPEG_PATH
 
 _http_lib = None
 if not _http_lib:
@@ -85,7 +85,14 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
         stderr = open(filename + '.postprocess_stderr.log', 'w+') if DEBUG else subprocess.DEVNULL
         output_str = '-c:a copy -c:v copy'
         suffix = ''
-        if SEGMENT_TIME is not None:
+        if SEGMENT_SIZE is not None:
+            # Segment by file size (takes priority over time-based segmentation)
+            output_str += f' -f segment -reset_timestamps 1 -segment_size {str(SEGMENT_SIZE)}'
+            if hasattr(self, 'filename_extra_suffix'):
+                suffix = self.filename_extra_suffix
+            filename = filename[:-len('.' + CONTAINER)] + '_%03d' + suffix + '.' + CONTAINER
+        elif SEGMENT_TIME is not None:
+            # Segment by time
             output_str += f' -f segment -reset_timestamps 1 -segment_time {str(SEGMENT_TIME)}'
             if hasattr(self, 'filename_extra_suffix'):
                 suffix = self.filename_extra_suffix

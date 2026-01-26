@@ -25,6 +25,10 @@ services:
       STRMNTR_STATUS_FREQ: "5"
       # set refresh frequency on list page
       STRMNTR_LIST_FREQ: "30"
+      # segment videos by file size (default: 800M)
+      STRMNTR_SEGMENT_SIZE: "800M"
+      # segment videos by time in seconds (e.g., 3600 for 1 hour)
+      #STRMNTR_SEGMENT_TIME: "3600"
     volumes:
       - ./downloads:/app/downloads
       - ./config.json:/app/config.json

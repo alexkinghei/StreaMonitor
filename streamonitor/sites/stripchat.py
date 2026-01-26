@@ -1,15 +1,28 @@
 import itertools
 import json
+import os
 import os.path
 import random
 import re
 import requests
 import base64
 import hashlib
+from datetime import datetime
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    # Fallback for Python < 3.9
+    try:
+        from backports.zoneinfo import ZoneInfo
+    except ImportError:
+        import pytz
+        ZoneInfo = None
 
 from streamonitor.bot import RoomIdBot
 from streamonitor.downloaders.hls import getVideoNativeHLS
 from streamonitor.enums import Status, Gender, COUNTRIES
+from parameters import DOWNLOADS_DIR, CONTAINER
 
 
 class StripChat(RoomIdBot):
@@ -128,6 +141,62 @@ class StripChat(RoomIdBot):
 
     def getWebsiteURL(self):
         return "https://stripchat.com/" + self.username
+
+    @property
+    def outputFolder(self):
+        # New format: /{username} (only username, no platform)
+        return str(os.path.join(DOWNLOADS_DIR, self.username))
+
+    def genOutFilename(self, create_dir=True):
+        folder = self.outputFolder
+        if create_dir:
+            os.makedirs(folder, exist_ok=True)
+        
+        # Get current time in Asia/Hong_Kong timezone with milliseconds
+        if ZoneInfo is not None:
+            # Use zoneinfo (Python 3.9+)
+            hk_tz = ZoneInfo('Asia/Hong_Kong')
+            now = datetime.now(hk_tz)
+        else:
+            # Fallback to pytz
+            hk_tz = pytz.timezone('Asia/Hong_Kong')
+            now = hk_tz.localize(datetime.now())
+        
+        # Format: YYYY-MM-DD-HHMMSS-milliseconds
+        # Get milliseconds (microseconds / 1000)
+        milliseconds = now.microsecond // 1000
+        timestamp = now.strftime(f"%Y-%m-%d-%H%M%S-{milliseconds:03d}")
+        
+        # Get topic from lastInfo if available
+        topic = None
+        if hasattr(self, 'lastInfo') and self.lastInfo:
+            topic = self.lastInfo.get('topic')
+        
+        # Clean topic for filename (remove invalid characters)
+        if topic:
+            # Remove or replace characters that are invalid in filenames
+            # Windows: < > : " / \ | ? *
+            # Unix: / (forward slash)
+            invalid_chars = r'[<>:"/\\|?*\x00-\x1f]'
+            topic = re.sub(invalid_chars, '_', str(topic))
+            # Remove leading/trailing spaces and dots, and limit length
+            topic = topic.strip(' .')
+            # Limit topic length to avoid very long filenames
+            if len(topic) > 50:
+                topic = topic[:50]
+            # If topic is empty after cleaning, set to None
+            if not topic:
+                topic = None
+        
+        # Build filename: {platform}-{username}-{timestamp}-{topic}.{container}
+        # Format: StripChat-username-2025-01-26-143022-123-topic.mp4
+        filename_parts = [self.site, self.username, timestamp]
+        if topic:
+            filename_parts.append(topic)
+        
+        filename = os.path.join(folder, '-'.join(filename_parts) + '.' + CONTAINER)
+        
+        return filename
 
     def getVideoUrl(self):
         return self.getWantedResolutionPlaylist(None)

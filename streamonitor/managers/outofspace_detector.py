@@ -34,10 +34,19 @@ class OOSDetector(Thread):
     def disk_space_good():
         return OOSDetector.free_space() > MIN_FREE_DISK_PERCENT
 
+    @staticmethod
+    def get_threshold_message():
+        free_percent = OOSDetector.free_space()
+        usage = OOSDetector.space_usage()
+        return (f'Free space is under threshold. '
+                f'Current: {free_percent:.2f}%, Required: {MIN_FREE_DISK_PERCENT}%. '
+                f'Free: {usage.free / (1024**3):.2f} GB, Total: {usage.total / (1024**3):.2f} GB. Exiting.')
+
     def run(self):
         while True:
             if not self.disk_space_good():
-                self.logger.warning(self.under_threshold_message)
+                message = OOSDetector.get_threshold_message()
+                self.logger.warning(message)
                 CleanExit(self.streamers)()
                 return
             sleep(5)
