@@ -41,19 +41,51 @@ VR_FORMAT_SUFFIX = env.bool("STRMNTR_VR_FORMAT_SUFFIX", True)
 # 1.3 should be the sweet spot but use what works
 FFMPEG_READRATE = env.int("STRMNTR_FFMPEG_READRATE", 1.3)
 
-# Specify the segment time in seconds
+# Specify the segment size in bytes
 # If None, the video will be downloaded as a single file
+# You can specify size in bytes, or with units (K, M, G)
 # Example:
-# 5 minutes
-# SEGMENT_TIME = 300
-# 1 hour
-# SEGMENT_TIME = 3600
-# Also see the ffmpeg documentation for the segment_time option
-# You can specify time in hh:mm:ss format
-# Example:
-# 1 hour
-# SEGMENT_TIME = '1:00:00'
-SEGMENT_TIME = env.str("STRMNTR_SEGMENT_TIME", None)
+# 800M (800 MB)
+# SEGMENT_SIZE = "800M"
+# 1G (1 GB)
+# SEGMENT_SIZE = "1G"
+# 838860800 (800 MB in bytes)
+# SEGMENT_SIZE = "838860800"
+# Also see the ffmpeg documentation for the segment_size option
+# Note: For live streaming, segment_size may not work as expected with some formats.
+# You may need to use segment_time instead, or ensure the container format supports size-based segmentation.
+SEGMENT_SIZE = env.str("STRMNTR_SEGMENT_SIZE", None)
+
+
+def parse_segment_size(size_str):
+    """
+    Parse segment size string to bytes.
+    Supports formats: "800M", "1G", "838860800", etc.
+    Returns None if size_str is None, or the size in bytes as string.
+    """
+    if size_str is None:
+        return None
+    
+    size_str = size_str.strip().upper()
+    if not size_str:
+        return None
+    
+    # Check if it ends with a unit
+    multipliers = {'K': 1024, 'M': 1024**2, 'G': 1024**3}
+    
+    for unit, multiplier in multipliers.items():
+        if size_str.endswith(unit):
+            try:
+                number = float(size_str[:-1])
+                return str(int(number * multiplier))
+            except ValueError:
+                return None
+    
+    # If no unit, assume bytes
+    try:
+        return str(int(size_str))
+    except ValueError:
+        return None
 
 # HTTP Manager configuration
 

@@ -5,7 +5,7 @@ import sys
 
 import requests.cookies
 from threading import Thread
-from parameters import DEBUG, SEGMENT_TIME, CONTAINER, FFMPEG_PATH, FFMPEG_READRATE
+from parameters import DEBUG, SEGMENT_SIZE, parse_segment_size, CONTAINER, FFMPEG_PATH, FFMPEG_READRATE
 
 
 def getVideoFfmpeg(self, url, filename):
@@ -40,15 +40,36 @@ def getVideoFfmpeg(self, url, filename):
     if hasattr(self, 'filename_extra_suffix'):
         suffix = self.filename_extra_suffix
 
-    if SEGMENT_TIME is not None:
+    segment_size_bytes = parse_segment_size(SEGMENT_SIZE)
+    if segment_size_bytes is not None:
         username = filename.rsplit('-', maxsplit=2)[0]
-        cmd.extend([
-            '-f', 'segment',
-            '-reset_timestamps', '1',
-            '-segment_time', str(SEGMENT_TIME),
-            '-strftime', '1',
-            f'{username}-%Y%m%d-%H%M%S{suffix}.{CONTAINER}'
-        ])
+        # Build output filename pattern
+        output_pattern = f'{username}-%Y%m%d-%H%M%S{suffix}.{CONTAINER}'
+        
+        # For MP4 format, we need to use movflags for proper real-time segmentation
+        if CONTAINER == 'mp4':
+            # Use segment_format_options to pass movflags to the MP4 muxer
+            # Note: segment_size may not split exactly at the specified size for live streams
+            # as it needs to wait for keyframes. Actual segment size may be slightly larger.
+            cmd.extend([
+                '-f', 'segment',
+                '-reset_timestamps', '1',
+                '-segment_size', segment_size_bytes,
+                '-segment_format', 'mp4',
+                '-segment_format_options', 'movflags=+frag_keyframe+empty_moov+default_base_moof',
+                '-strftime', '1',
+                output_pattern
+            ])
+        else:
+            # For other formats (mkv, etc.), use standard segment options
+            cmd.extend([
+                '-f', 'segment',
+                '-reset_timestamps', '1',
+                '-segment_size', segment_size_bytes,
+                '-segment_format', CONTAINER,
+                '-strftime', '1',
+                output_pattern
+            ])
     else:
         cmd.extend([
             os.path.splitext(filename)[0] + suffix + '.' + CONTAINER

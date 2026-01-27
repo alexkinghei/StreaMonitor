@@ -31,6 +31,10 @@ services:
       # - truck-kun (default) - 3rd skin, row oriented
       # - shaftoverflow - 4th skin, card layout, links in menus
       STRMNTR_SKIN: "shaftoverflow"
+      # Set segment size for video splitting (in bytes or with units: K, M, G)
+      # Example: "838860800" (800 MB in bytes), "800M" (800 MB), "1G" (1 GB)
+      # If not set, videos will be downloaded as a single file
+      STRMNTR_SEGMENT_SIZE: "800M"
     volumes:
       - ./downloads:/app/downloads
       - ./config.json:/app/config.json
