@@ -7,7 +7,7 @@ import json
 import logging
 
 from parameters import WEBSERVER_HOST, WEBSERVER_PORT, WEBSERVER_PASSWORD, WEB_LIST_FREQUENCY, WEB_STATUS_FREQUENCY, \
-    WEBSERVER_SKIN
+    WEBSERVER_SKIN, WEB_THEATER_MODE
 import streamonitor.log as log
 from functools import wraps
 from secrets import compare_digest
@@ -152,6 +152,21 @@ class HTTPManager(Manager):
             video = request.args.get("play_video")
             sort_by_size = bool(request.args.get("sorted", False))
             streamer = cast(Union[Bot, None], self.getStreamer(user, site))
+            if streamer is None:
+                streamer = InvalidStreamer(user, site)
+                context = {
+                    'streamer': streamer,
+                    'sort_by_size': sort_by_size,
+                    'video_to_play': None,
+                    'refresh_freq': WEB_STATUS_FREQUENCY,
+                    'videos': {},
+                    'total_size': 0,
+                    'has_error': True,
+                    'recordings_error_message': f'Streamer {user} on site {site} not found',
+                    'theater_mode': WEB_THEATER_MODE,
+                    'confirm_deletes': confirm_deletes(request.headers.get('User-Agent')),
+                }
+                return render_template('recordings.html.jinja', **context), 500
             streamer.cache_file_list()
             context = get_streamer_context(streamer, sort_by_size, video, request.headers.get('User-Agent'))
             status_code = 500 if context['has_error'] else 200
@@ -166,6 +181,8 @@ class HTTPManager(Manager):
         @app.route('/video/<user>/<site>/<path:filename>', methods=['GET'])
         def get_video(user, site, filename):
             streamer = cast(Union[Bot, None], self.getStreamer(user, site))
+            if streamer is None:
+                return ('Streamer not found', 404)
             return send_from_directory(
                 os.path.abspath(streamer.outputFolder),
                 filename
@@ -176,8 +193,24 @@ class HTTPManager(Manager):
         def watch_video(user, site, play_video):
             sort_by_size = bool(request.args.get("sorted", False))
             streamer = cast(Union[Bot, None], self.getStreamer(user, site))
-            context = get_streamer_context(streamer, sort_by_size, play_video, request.headers.get('User-Agent'))
-            status_code = 500 if context['video_to_play'] is None or context['has_error'] else 200
+            if streamer is None:
+                streamer = InvalidStreamer(user, site)
+                context = {
+                    'streamer': streamer,
+                    'sort_by_size': sort_by_size,
+                    'video_to_play': None,
+                    'refresh_freq': WEB_STATUS_FREQUENCY,
+                    'videos': {},
+                    'total_size': 0,
+                    'has_error': True,
+                    'recordings_error_message': f'Streamer {user} on site {site} not found',
+                    'theater_mode': WEB_THEATER_MODE,
+                    'confirm_deletes': confirm_deletes(request.headers.get('User-Agent')),
+                }
+                status_code = 500
+            else:
+                context = get_streamer_context(streamer, sort_by_size, play_video, request.headers.get('User-Agent'))
+                status_code = 500 if context['video_to_play'] is None or context['has_error'] else 200
             response = make_response(render_template('recordings_content.html.jinja', **context), status_code)
             query_param = get_recording_query_params(sort_by_size, play_video)
             response.headers['HX-Replace-Url'] = f"/recordings/{user}/{site}{query_param}"
@@ -189,8 +222,24 @@ class HTTPManager(Manager):
             streamer = cast(Union[Bot, None], self.getStreamer(user, site))
             sort_by_size = bool(request.args.get("sorted", False))
             play_video = request.args.get("play_video", None)
-            context = get_streamer_context(streamer, sort_by_size, play_video, request.headers.get('User-Agent'))
-            status_code = 500 if context['has_error'] else 200
+            if streamer is None:
+                streamer = InvalidStreamer(user, site)
+                context = {
+                    'streamer': streamer,
+                    'sort_by_size': sort_by_size,
+                    'video_to_play': None,
+                    'refresh_freq': WEB_STATUS_FREQUENCY,
+                    'videos': {},
+                    'total_size': 0,
+                    'has_error': True,
+                    'recordings_error_message': f'Streamer {user} on site {site} not found',
+                    'theater_mode': WEB_THEATER_MODE,
+                    'confirm_deletes': confirm_deletes(request.headers.get('User-Agent')),
+                }
+                status_code = 500
+            else:
+                context = get_streamer_context(streamer, sort_by_size, play_video, request.headers.get('User-Agent'))
+                status_code = 500 if context['has_error'] else 200
             response = make_response(render_template('video_list.html.jinja', **context), status_code)
             query_param = get_recording_query_params(sort_by_size, play_video)
             response.headers['HX-Replace-Url'] = f"/recordings/{user}/{site}{query_param}"
@@ -202,25 +251,41 @@ class HTTPManager(Manager):
             streamer = cast(Union[Bot, None], self.getStreamer(user, site))
             sort_by_size = bool(request.args.get("sorted", False))
             play_video = request.args.get("play_video", None)
-            context = get_streamer_context(streamer, sort_by_size, play_video, request.headers.get('User-Agent'))
-            status_code = 200
-            match = context['videos'].pop(filename, None)
-            if match is not None:
-                try:
-                    os.remove(match.abs_path)
-                    streamer.cache_file_list()
-                    context['total_size'] = context['total_size'] - match.filesize
-                    if context['video_to_play'] is not None and filename == context['video_to_play'].filename:
-                        context['video_to_play'] = None
-                except Exception as e:
-                    status_code = 500
-                    context['has_error'] = True
-                    context['recordings_error_message'] = repr(e)
-                    self.logger.error(e)
+            if streamer is None:
+                streamer = InvalidStreamer(user, site)
+                context = {
+                    'streamer': streamer,
+                    'sort_by_size': sort_by_size,
+                    'video_to_play': None,
+                    'refresh_freq': WEB_STATUS_FREQUENCY,
+                    'videos': {},
+                    'total_size': 0,
+                    'has_error': True,
+                    'recordings_error_message': f'Streamer {user} on site {site} not found',
+                    'theater_mode': WEB_THEATER_MODE,
+                    'confirm_deletes': confirm_deletes(request.headers.get('User-Agent')),
+                }
+                status_code = 500
             else:
-                status_code = 404
-                context['has_error'] = True
-                context['recordings_error_message'] = f'Could not find {filename}, so no file removed'
+                context = get_streamer_context(streamer, sort_by_size, play_video, request.headers.get('User-Agent'))
+                status_code = 200
+                match = context['videos'].pop(filename, None)
+                if match is not None:
+                    try:
+                        os.remove(match.abs_path)
+                        streamer.cache_file_list()
+                        context['total_size'] = context['total_size'] - match.filesize
+                        if context['video_to_play'] is not None and filename == context['video_to_play'].filename:
+                            context['video_to_play'] = None
+                    except Exception as e:
+                        status_code = 500
+                        context['has_error'] = True
+                        context['recordings_error_message'] = repr(e)
+                        self.logger.error(e)
+                else:
+                    status_code = 404
+                    context['has_error'] = True
+                    context['recordings_error_message'] = f'Could not find {filename}, so no file removed'
             response = make_response(render_template('video_list.html.jinja', **context), status_code)
             query_param = get_recording_query_params(sort_by_size, play_video)
             response.headers['HX-Replace-Url'] = f"/recordings/{user}/{site}{query_param}"
