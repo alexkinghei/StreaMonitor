@@ -22,6 +22,9 @@ if not _http_lib:
 if not _http_lib:
     raise ImportError("Please install requests or pycurl package to proceed")
 
+# Segments smaller than this are discarded (no real content); avoids ~262B empty/minimal MP4s
+MIN_SEGMENT_SIZE = 64 * 1024  # 64 KiB
+
 
 def getVideoNativeHLS(self, url, filename, m3u_processor=None):
     self.stopDownloadFlag = False
@@ -55,8 +58,12 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                     
                     if not os.path.exists(ts_file_path):
                         return
-                    if os.path.getsize(ts_file_path) == 0:
-                        os.remove(ts_file_path)
+                    sz = os.path.getsize(ts_file_path)
+                    if sz == 0 or sz < MIN_SEGMENT_SIZE:
+                        try:
+                            os.remove(ts_file_path)
+                        except OSError:
+                            pass
                         return
                     
                     stdout = open(final_filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
@@ -91,9 +98,16 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                     prev_ts_file = current_file
                     # Generate final filename by replacing .ts with .mp4
                     prev_final_filename = prev_ts_file.replace('.ts', '.' + CONTAINER)
-                    if os.path.exists(prev_ts_file) and os.path.getsize(prev_ts_file) > 0:
-                        segment_files.append((prev_ts_file, prev_final_filename))
-                        convert_segment_to_mp4(prev_ts_file, prev_final_filename)
+                    if os.path.exists(prev_ts_file):
+                        prev_sz = os.path.getsize(prev_ts_file)
+                        if prev_sz >= MIN_SEGMENT_SIZE:
+                            segment_files.append((prev_ts_file, prev_final_filename))
+                            convert_segment_to_mp4(prev_ts_file, prev_final_filename)
+                        elif prev_sz > 0:
+                            try:
+                                os.remove(prev_ts_file)
+                            except OSError:
+                                pass
                     
                     # Generate new filename with timestamp (like pause/resume)
                     new_filename = self.genOutFilename(create_dir=True)
@@ -170,22 +184,29 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
         sleep(0.5)
         
         # Convert the last segment that might still be in .ts format (success or error path)
-        if current_file and os.path.exists(current_file) and os.path.getsize(current_file) > 0:
-            final_filename = current_file.replace('.ts', '.' + CONTAINER)
-            try:
-                stdout = open(final_filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
-                stderr = open(final_filename + '.postprocess_stderr.log', 'w+') if DEBUG else subprocess.DEVNULL
-                output_str = '-c:a copy -c:v copy'
-                if CONTAINER == 'mp4':
-                    output_str += ' -movflags +faststart'
-                ff = FFmpeg(executable=FFMPEG_PATH, inputs={current_file: None}, outputs={final_filename: output_str})
-                ff.run(stdout=stdout, stderr=stderr)
-                os.remove(current_file)
-            except FFRuntimeError as e:
-                if e.exit_code and e.exit_code != 255:
-                    self.logger.error(f'Error converting final segment: {e}')
-            except Exception as e:
-                self.logger.error(f'Unexpected error converting final segment: {e}')
+        if current_file and os.path.exists(current_file):
+            last_sz = os.path.getsize(current_file)
+            if last_sz >= MIN_SEGMENT_SIZE:
+                final_filename = current_file.replace('.ts', '.' + CONTAINER)
+                try:
+                    stdout = open(final_filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
+                    stderr = open(final_filename + '.postprocess_stderr.log', 'w+') if DEBUG else subprocess.DEVNULL
+                    output_str = '-c:a copy -c:v copy'
+                    if CONTAINER == 'mp4':
+                        output_str += ' -movflags +faststart'
+                    ff = FFmpeg(executable=FFMPEG_PATH, inputs={current_file: None}, outputs={final_filename: output_str})
+                    ff.run(stdout=stdout, stderr=stderr)
+                    os.remove(current_file)
+                except FFRuntimeError as e:
+                    if e.exit_code and e.exit_code != 255:
+                        self.logger.error(f'Error converting final segment: {e}')
+                except Exception as e:
+                    self.logger.error(f'Unexpected error converting final segment: {e}')
+            else:
+                try:
+                    os.remove(current_file)
+                except OSError:
+                    pass
         
         if error:
             return False
