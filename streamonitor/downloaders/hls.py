@@ -110,7 +110,12 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
         try:
             did_download = False
             while not self.stopDownloadFlag:
-                r = session.get(url, headers=self.headers, cookies=self.cookies, timeout=30)
+                try:
+                    r = session.get(url, headers=self.headers, cookies=self.cookies, timeout=30)
+                except Exception as e:
+                    self.logger.warning('HLS playlist fetch failed (connection/timeout): %s', e)
+                    error = True
+                    return
                 content = r.content.decode("utf-8")
                 if m3u_processor:
                     content = m3u_processor(content)
@@ -126,7 +131,12 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                     self.debug('Downloading ' + chunk_uri)
                     if not chunk_uri.startswith("https://"):
                         chunk_uri = '/'.join(url.split('.m3u8')[0].split('/')[:-1]) + '/' + chunk_uri
-                    m = session.get(chunk_uri, headers=self.headers, cookies=self.cookies, timeout=30)
+                    try:
+                        m = session.get(chunk_uri, headers=self.headers, cookies=self.cookies, timeout=30)
+                    except Exception as e:
+                        self.logger.warning('HLS chunk fetch failed (connection/timeout): %s', e)
+                        error = True
+                        return
                     if m.status_code != 200:
                         return
                     file_handle = get_output_file()
