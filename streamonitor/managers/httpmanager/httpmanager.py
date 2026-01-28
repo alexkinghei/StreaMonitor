@@ -5,9 +5,12 @@ from flask import Flask, make_response, render_template, request, send_from_dire
 import os
 import json
 import logging
+import subprocess
+import time
 
+from ffmpy import FFmpeg, FFRuntimeError
 from parameters import WEBSERVER_HOST, WEBSERVER_PORT, WEBSERVER_PASSWORD, WEB_LIST_FREQUENCY, WEB_STATUS_FREQUENCY, \
-    WEBSERVER_SKIN, WEB_THEATER_MODE
+    WEBSERVER_SKIN, WEB_THEATER_MODE, DOWNLOADS_DIR, CONTAINER, FFMPEG_PATH
 import streamonitor.log as log
 from functools import wraps
 from secrets import compare_digest
@@ -111,6 +114,75 @@ class HTTPManager(Manager):
         @login_required
         def execApiCommand():
             return self.execCmd(request.args.get("command"))
+
+        @app.route('/api/cleanup-ts', methods=['GET', 'POST'])
+        @login_required
+        def api_cleanup_ts():
+            """Scan all recording dirs for leftover .ts; convert to mp4 if mtime > 5 min ago, else skip. On convert failure, delete .ts."""
+            now = time.time()
+            cutoff = now - (5 * 60)
+            converted_ok = []
+            converted_failed = []
+            skipped = []
+            if not os.path.isdir(DOWNLOADS_DIR):
+                return Response(json.dumps({
+                    "converted_ok": converted_ok,
+                    "converted_failed": converted_failed,
+                    "skipped": skipped,
+                    "summary": {"converted_ok": 0, "converted_failed": 0, "skipped": 0},
+                    "error": "downloads directory not found",
+                }, indent=2, ensure_ascii=False), mimetype='application/json; charset=utf-8')
+            for dirname in os.listdir(DOWNLOADS_DIR):
+                full_dir = os.path.join(DOWNLOADS_DIR, dirname)
+                if not os.path.isdir(full_dir):
+                    continue
+                for filename in os.listdir(full_dir):
+                    if not filename.endswith('.ts'):
+                        continue
+                    full_path = os.path.join(full_dir, filename)
+                    try:
+                        mtime = os.path.getmtime(full_path)
+                    except OSError:
+                        continue
+                    rel_path = os.path.join(dirname, filename)
+                    if mtime > cutoff:
+                        skipped.append(rel_path)
+                        continue
+                    mp4_path = full_path[:-3] + CONTAINER
+                    try:
+                        ff = FFmpeg(
+                            executable=FFMPEG_PATH,
+                            inputs={full_path: None},
+                            outputs={mp4_path: '-c:a copy -c:v copy -movflags +faststart' if CONTAINER == 'mp4' else '-c:a copy -c:v copy'},
+                        )
+                        ff.run(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        try:
+                            os.remove(full_path)
+                        except OSError:
+                            pass
+                        converted_ok.append(rel_path)
+                    except FFRuntimeError as e:
+                        try:
+                            os.remove(full_path)
+                        except OSError:
+                            pass
+                        converted_failed.append({"path": rel_path, "reason": f"ffmpeg exit {e.exit_code}"})
+                    except Exception as e:
+                        try:
+                            os.remove(full_path)
+                        except OSError:
+                            pass
+                        converted_failed.append({"path": rel_path, "reason": str(e)})
+            return Response(json.dumps({
+                "converted_ok": converted_ok,
+                "converted_failed": converted_failed,
+                "skipped": skipped,
+                "summary": {
+                    "converted_ok": len(converted_ok),
+                    "converted_failed": len(converted_failed),
+                    "skipped": len(skipped),
+                },
+            }, indent=2, ensure_ascii=False), mimetype='application/json; charset=utf-8')
 
         @app.route('/', methods=['GET'])
         @login_required
