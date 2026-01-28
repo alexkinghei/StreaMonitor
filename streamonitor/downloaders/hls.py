@@ -188,20 +188,39 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
             last_sz = os.path.getsize(current_file)
             if last_sz >= MIN_SEGMENT_SIZE:
                 final_filename = current_file.replace('.ts', '.' + CONTAINER)
+                stderr_path = final_filename + '.postprocess_stderr.log'
+                stderr_file = None
                 try:
+                    # Always write stderr log so it can be inspected when conversion fails (e.g. exit 254)
                     stdout = open(final_filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
-                    stderr = open(final_filename + '.postprocess_stderr.log', 'w+') if DEBUG else subprocess.DEVNULL
+                    stderr_file = open(stderr_path, 'w+')
                     output_str = '-c:a copy -c:v copy'
                     if CONTAINER == 'mp4':
                         output_str += ' -movflags +faststart'
                     ff = FFmpeg(executable=FFMPEG_PATH, inputs={current_file: None}, outputs={final_filename: output_str})
-                    ff.run(stdout=stdout, stderr=stderr)
+                    ff.run(stdout=stdout, stderr=stderr_file)
+                    stderr_file.close()
+                    stderr_file = None
+                    try:
+                        os.remove(stderr_path)
+                    except OSError:
+                        pass
                     os.remove(current_file)
                 except FFRuntimeError as e:
+                    if stderr_file:
+                        try:
+                            stderr_file.close()
+                        except OSError:
+                            pass
                     if e.exit_code and e.exit_code != 255:
-                        self.logger.error(f'Error converting final segment: {e}')
+                        self.logger.error(f'Error converting final segment: {e}. Check {stderr_path!r} for ffmpeg stderr.')
                 except Exception as e:
-                    self.logger.error(f'Unexpected error converting final segment: {e}')
+                    if stderr_file:
+                        try:
+                            stderr_file.close()
+                        except OSError:
+                            pass
+                    self.logger.error(f'Unexpected error converting final segment: {e}. Check {stderr_path!r} for ffmpeg stderr.')
             else:
                 try:
                     os.remove(current_file)

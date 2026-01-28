@@ -4,6 +4,7 @@ import os
 import os.path
 import random
 import re
+import unicodedata
 import requests
 import base64
 import hashlib
@@ -30,6 +31,7 @@ class StripChat(RoomIdBot):
     siteslug = 'SC'
 
     bulk_update = True
+    sleep_on_error = 10
     _static_data = None
     _mouflon_cache_filename = 'stripchat_mouflon_keys.json'
     _mouflon_keys: dict = None
@@ -177,9 +179,11 @@ class StripChat(RoomIdBot):
             # Remove or replace characters that are invalid in filenames
             # Windows: < > : " / \ | ? *
             # Unix: / (forward slash)
-            # Also ! can cause shell/history issues and ffmpeg exit 183 in some environments
-            invalid_chars = r'[<>:"/\\|?*!\x00-\x1f]'
+            # ! shell/history; ~ ～ and emoji can cause ffmpeg exit 254/183
+            invalid_chars = r'[<>:"/\\|?*!\x00-\x1f~～]'
             topic = re.sub(invalid_chars, '_', str(topic))
+            # Remove emoji and other symbols that break ffmpeg/paths (So=Symbol other, Sk=Symbol modifier)
+            topic = ''.join(c for c in topic if unicodedata.category(c) not in ('So', 'Sk') and ord(c) < 0x10000)
             # Remove leading/trailing spaces and dots
             topic = topic.strip(' ._')
             # Limit topic by UTF-8 byte length (80 bytes) so filename stays safe and avoids ffmpeg/path issues

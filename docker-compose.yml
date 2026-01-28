@@ -7,6 +7,8 @@ services:
     # image: ghcr.io/lossless1024/streamonitor:latest
 
     restart: unless-stopped
+    # Give time for graceful shutdown: stop all recordings (flush/close files) before container is killed
+    stop_grace_period: 120s
     environment:
       # set timzeone
       #TZ: Etc/UTC

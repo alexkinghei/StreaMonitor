@@ -31,10 +31,24 @@ class CleanExit:
     def __call__(self, *args, **kwargs):
         self.clean_exit()
 
+    def _log(self, msg):
+        try:
+            import streamonitor.log as log
+            log.Logger("clean_exit").get_logger().info(msg)
+        except Exception:
+            print("[clean_exit]", msg)
+
     def clean_exit(self, _=None, __=None):
+        self._log("Shutdown: stopping all recordings first (graceful)...")
         for streamer in self.streamers:
             streamer.stop(None, None, True)
+        # Wait until no one is recording (stopDownload has been processed and files closed)
+        deadline = time.monotonic() + 90
+        while time.monotonic() < deadline and any(getattr(s, "recording", False) for s in self.streamers):
+            time.sleep(0.5)
+        self._log("Waiting for all streamer threads to exit...")
         for streamer in self.streamers:
             while streamer.is_alive():
                 time.sleep(1)
+        self._log("All stopped, exiting.")
         self.dummy_thread.stop()
