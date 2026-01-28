@@ -23,6 +23,28 @@
     <div id="content">
         {% block content %}{% endblock %}
     </div>
+    <script>
+        // Simple toast helper; prefers #toast-notifications, falls back to alert().
+        function showToast(message, status = 'success', timeoutMs = 2000) {
+            const container = document.getElementById('toast-notifications');
+            if (!container) {
+                alert(message);
+                return;
+            }
+            const toast = document.createElement('div');
+            toast.className = `toast ${status}`;
+            toast.textContent = message;
+            container.innerHTML = '';
+            container.appendChild(toast);
+            if (timeoutMs > 0) {
+                setTimeout(() => {
+                    if (toast.parentNode === container) {
+                        container.removeChild(toast);
+                    }
+                }, timeoutMs);
+            }
+        }
+    </script>
     
     <!-- Bootstrap 5 JS Bundle with Popper -->
     <script src="/static/bootstrap@5.3.0/bootstrap.bundle.min.js"></script>

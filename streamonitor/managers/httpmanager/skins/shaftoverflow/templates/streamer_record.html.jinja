@@ -75,7 +75,8 @@
                             hx-target="closest .streamer-card"
                             hx-sync="closest .streamer-card:replace"
                             hx-swap="outerHTML"
-                            hx-disabled-elt="this">
+                            hx-disabled-elt="this"
+                            hx-on:click="showToast('开始转换 TS → MP4 ...', 'success', 1500)">
                             <i class="bi bi-arrow-repeat me-2"></i>Convert TS to MP4
                         </button>
                     </li>

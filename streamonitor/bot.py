@@ -206,6 +206,8 @@ class Bot(Thread):
         converted = 0
         deleted = 0
         skipped = 0
+        # Also clean up old ffmpeg postprocess logs from previous failures.
+        deleted_logs = 0
         # Additional safety to avoid racing with very recent writes or late close.
         # Any .ts modified within this window will be skipped.
         recent_write_grace_seconds = 120
@@ -221,6 +223,19 @@ class Bot(Thread):
                     return candidate
                 i += 1
 
+        # Pass 1: delete old postprocess logs (user requested no logs)
+        for entry in os.scandir(folder):
+            if not entry.is_file():
+                continue
+            name_lower = entry.name.lower()
+            if name_lower.endswith(".postprocess_stderr.log") or name_lower.endswith(".postprocess_stdout.log"):
+                try:
+                    os.remove(entry.path)
+                    deleted_logs += 1
+                except OSError:
+                    pass
+
+        # Pass 2: convert leftover .ts
         for entry in os.scandir(folder):
             if not entry.is_file():
                 continue
@@ -234,7 +249,8 @@ class Bot(Thread):
             ts_path = entry.path
             # If the file is very recently modified, assume it might still be in use.
             try:
-                if (time.time() - entry.stat().st_mtime) < recent_write_grace_seconds:
+                ts_stat = entry.stat()
+                if (time.time() - ts_stat.st_mtime) < recent_write_grace_seconds:
                     skipped += 1
                     continue
             except OSError:
@@ -259,6 +275,11 @@ class Bot(Thread):
                     stderr=subprocess.DEVNULL,
                     check=True,
                 )
+                # Keep the converted file's mtime in sync with the original ts.
+                try:
+                    os.utime(mp4_path, (ts_stat.st_atime, ts_stat.st_mtime))
+                except OSError:
+                    pass
                 try:
                     os.remove(ts_path)
                 except OSError:
@@ -286,7 +307,7 @@ class Bot(Thread):
 
         if converted == 0 and deleted == 0 and skipped == 0:
             return "No ts files"
-        return f"OK (converted={converted}, deleted={deleted}, skipped={skipped})"
+        return f"OK (converted={converted}, deleted={deleted}, skipped={skipped}, deleted_logs={deleted_logs})"
 
     def run(self):
         while not self.quitting:
