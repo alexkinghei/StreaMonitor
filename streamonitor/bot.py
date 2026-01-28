@@ -183,6 +183,11 @@ class Bot(Thread):
                         self.log(self.status())
                         self.previous_status = self.sc
                     if self.sc == Status.ERROR:
+                        # Stop any ongoing recording gracefully (same as pause button)
+                        if self.recording and self.stopDownload:
+                            self.log("Stopping recording due to error...")
+                            self.stopDownload()
+                            self.recording = False
                         self._sleep(self.sleep_on_error)
                     if self.sc == Status.OFFLINE:
                         offline_time += self.sleep_on_offline
@@ -215,6 +220,7 @@ class Bot(Thread):
                             ret = self.getVideo(self, video_url, file)
                             if not ret:
                                 self.sc = Status.ERROR
+                                self.recording = False
                                 self.log(self.status())
                                 self._sleep(self.sleep_on_error)
                                 continue
@@ -223,12 +229,16 @@ class Bot(Thread):
                             self.cache_file_list()
                 except Exception as e:
                     self.logger.exception(e)
+                    # Stop ongoing recording gracefully (same as pause button) so stream/file is closed properly
+                    if self.recording and self.stopDownload:
+                        self.log("Stopping recording due to exception...")
+                        self.stopDownload()
+                    self.recording = False
                     try:
                         self.cache_file_list()
                     except Exception as e:
                         self.logger.exception(e)
                     self.log(self.status())
-                    self.recording = False
                     self._sleep(self.sleep_on_error)
                     continue
 
