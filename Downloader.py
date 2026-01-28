@@ -7,7 +7,6 @@ from streamonitor.managers.climanager import CLIManager
 from streamonitor.managers.zmqmanager import ZMQManager
 from streamonitor.managers.outofspace_detector import OOSDetector
 from streamonitor.clean_exit import CleanExit
-from streamonitor.utils.convert_legacy_ts import convert_legacy_ts_files_background
 import streamonitor.sites  # must have
 
         
@@ -23,9 +22,6 @@ def main():
     if not OOSDetector.disk_space_good():
         print(OOSDetector.get_threshold_message())
         sys.exit(1)
-
-    # Convert legacy .ts files in background on startup
-    convert_legacy_ts_files_background()
 
     streamers = config.loadStreamers()
 
