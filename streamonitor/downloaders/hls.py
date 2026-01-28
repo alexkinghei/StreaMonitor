@@ -59,6 +59,26 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                     
                     if not os.path.exists(ts_file_path):
                         return
+                    
+                    # 检查文件是否正在被写入（文件被锁定）
+                    # 尝试以只读模式打开文件，如果失败说明文件可能还在被写入
+                    max_retries = 5
+                    retry_count = 0
+                    file_locked = True
+                    while retry_count < max_retries and file_locked:
+                        try:
+                            with open(ts_file_path, 'rb') as test_file:
+                                test_file.read(1)  # 尝试读取一个字节
+                            file_locked = False
+                        except (IOError, OSError, PermissionError):
+                            retry_count += 1
+                            if retry_count < max_retries:
+                                sleep(0.5)  # 等待0.5秒后重试
+                    
+                    if file_locked:
+                        self.logger.warning(f'Cannot convert {os.path.basename(ts_file_path)}: file is still locked (may be recording)')
+                        return
+                    
                     if os.path.getsize(ts_file_path) == 0:
                         os.remove(ts_file_path)
                         return

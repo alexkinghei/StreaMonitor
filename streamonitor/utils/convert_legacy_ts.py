@@ -3,6 +3,7 @@
 """
 import os
 import subprocess
+import time
 from pathlib import Path
 from threading import Thread
 from ffmpy import FFmpeg, FFRuntimeError
@@ -15,6 +16,28 @@ def convert_ts_file(ts_file_path, final_filename, logger=None):
     stderr_log_path = None
     try:
         if not os.path.exists(ts_file_path):
+            return False
+        
+        # 检查文件是否正在被写入（正在录制）
+        # 如果文件在最近30秒内被修改，认为它可能正在被录制，跳过转换
+        try:
+            file_mtime = os.path.getmtime(ts_file_path)
+            time_since_modification = time.time() - file_mtime
+            if time_since_modification < 30:  # 30秒内被修改，可能正在录制
+                if logger:
+                    logger.debug(f'Skipping {os.path.basename(ts_file_path)}: file was modified {time_since_modification:.1f}s ago (may be recording)')
+                return False
+        except Exception:
+            pass  # 如果无法获取修改时间，继续处理
+        
+        # 尝试以只读模式打开文件，检查是否被锁定（正在被写入）
+        try:
+            with open(ts_file_path, 'rb') as test_file:
+                test_file.read(1)  # 尝试读取一个字节
+        except (IOError, OSError, PermissionError):
+            # 文件被锁定或无法读取，可能正在被写入，跳过
+            if logger:
+                logger.debug(f'Skipping {os.path.basename(ts_file_path)}: file is locked (may be recording)')
             return False
         
         file_size = os.path.getsize(ts_file_path)
@@ -136,13 +159,27 @@ def convert_legacy_ts_files_background():
         logger.info(f'Found {len(ts_files)} legacy .ts file(s), converting in background...')
         
         success_count = 0
+        skipped_count = 0
         for ts_file in ts_files:
             final_filename = str(ts_file).replace('.ts', '.' + CONTAINER)
-            if convert_ts_file(str(ts_file), final_filename, logger):
+            result = convert_ts_file(str(ts_file), final_filename, logger)
+            if result:
                 success_count += 1
+            elif result is False and os.path.exists(str(ts_file)):
+                # 如果转换失败但文件仍然存在，可能是被跳过了（正在录制）
+                # 检查文件是否在最近被修改
+                try:
+                    file_mtime = os.path.getmtime(str(ts_file))
+                    time_since_modification = time.time() - file_mtime
+                    if time_since_modification < 30:
+                        skipped_count += 1
+                except Exception:
+                    pass
         
         if success_count > 0:
             logger.info(f'Converted {success_count} legacy .ts file(s) to {CONTAINER} format')
+        if skipped_count > 0:
+            logger.debug(f'Skipped {skipped_count} .ts file(s) that may be currently recording')
     
     # 在后台线程中运行，不阻塞主程序
     thread = Thread(target=convert_all, daemon=True)
