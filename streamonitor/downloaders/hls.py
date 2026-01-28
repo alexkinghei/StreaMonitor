@@ -1,10 +1,14 @@
 import m3u8
 import os
 import subprocess
+import time
 from threading import Thread
 from ffmpy import FFmpeg, FFRuntimeError
 from time import sleep
-from parameters import DEBUG, CONTAINER, SEGMENT_SIZE, parse_segment_size, FFMPEG_PATH
+from parameters import (
+    DEBUG, CONTAINER, SEGMENT_SIZE, parse_segment_size, FFMPEG_PATH,
+    HLS_TRANSIENT_GRACE_SECONDS, HLS_RETRY_SLEEP_SECONDS,
+)
 
 _http_lib = None
 if not _http_lib:
@@ -48,6 +52,10 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
         nonlocal error, current_file, current_file_size, segment_files
         downloaded_list = []
         outfile = [None]  # Use list to allow modification in nested function
+        last_success = time.monotonic()
+
+        def within_grace():
+            return (time.monotonic() - last_success) <= float(HLS_TRANSIENT_GRACE_SECONDS)
         
         def convert_segment_to_mp4(ts_file_path, final_filename):
             """Convert a .ts segment file to final format (MP4) in background thread"""
@@ -125,7 +133,11 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                 try:
                     r = session.get(url, headers=self.headers, cookies=self.cookies, timeout=30)
                 except Exception as e:
-                    self.logger.warning('HLS playlist fetch failed (connection/timeout): %s', e)
+                    if within_grace():
+                        self.logger.warning('HLS playlist fetch failed (transient, retrying): %s', e)
+                        sleep(float(HLS_RETRY_SLEEP_SECONDS))
+                        continue
+                    self.logger.warning('HLS playlist fetch failed (giving up): %s', e)
                     error = True
                     return
                 content = r.content.decode("utf-8")
@@ -133,6 +145,10 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                     content = m3u_processor(content)
                 chunklist = m3u8.loads(content)
                 if len(chunklist.segments) == 0:
+                    # Sometimes live playlists temporarily return empty; tolerate within grace.
+                    if within_grace():
+                        sleep(float(HLS_RETRY_SLEEP_SECONDS))
+                        continue
                     return
                 for chunk in chunklist.segment_map + chunklist.segments:
                     if chunk.uri in downloaded_list:
@@ -146,13 +162,22 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                     try:
                         m = session.get(chunk_uri, headers=self.headers, cookies=self.cookies, timeout=30)
                     except Exception as e:
-                        self.logger.warning('HLS chunk fetch failed (connection/timeout): %s', e)
+                        if within_grace():
+                            self.logger.warning('HLS chunk fetch failed (transient, retrying): %s', e)
+                            sleep(float(HLS_RETRY_SLEEP_SECONDS))
+                            continue
+                        self.logger.warning('HLS chunk fetch failed (giving up): %s', e)
                         error = True
                         return
                     if m.status_code != 200:
+                        if within_grace():
+                            self.logger.warning('HLS chunk status %s (transient, retrying)', m.status_code)
+                            sleep(float(HLS_RETRY_SLEEP_SECONDS))
+                            continue
                         return
                     file_handle = get_output_file()
                     file_handle.write(m.content)
+                    last_success = time.monotonic()
                     if segment_during_download:
                         current_file_size += len(m.content)
                     if self.stopDownloadFlag:
