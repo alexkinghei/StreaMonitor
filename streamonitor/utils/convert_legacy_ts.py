@@ -75,16 +75,31 @@ def convert_ts_file(ts_file_path, final_filename, logger=None):
     except FFRuntimeError as e:
         # 读取 stderr 日志以获取详细错误信息
         error_details = ""
+        has_no_streams = False
         if stderr_log_path and os.path.exists(stderr_log_path):
             try:
                 with open(stderr_log_path, 'r', encoding='utf-8', errors='ignore') as f:
                     stderr_content = f.read()
                     if stderr_content:
+                        # 检查是否是"没有流"的错误
+                        if 'does not contain any stream' in stderr_content or 'no stream' in stderr_content.lower():
+                            has_no_streams = True
                         # 提取最后几行错误信息
                         lines = stderr_content.strip().split('\n')
                         error_details = '\n'.join(lines[-5:]) if len(lines) > 5 else stderr_content
             except Exception:
                 pass
+        
+        # 如果文件没有有效流，删除损坏的文件
+        if has_no_streams:
+            try:
+                if os.path.exists(ts_file_path):
+                    os.remove(ts_file_path)
+                    if logger:
+                        logger.warning(f'Removed invalid .ts file (no streams): {os.path.basename(ts_file_path)}')
+            except Exception:
+                pass
+            return False
         
         if logger:
             error_msg = f'Failed to convert {os.path.basename(ts_file_path)}'

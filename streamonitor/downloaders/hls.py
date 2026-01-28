@@ -94,15 +94,29 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                 except FFRuntimeError as e:
                     # 读取 stderr 日志以获取详细错误信息
                     error_details = ""
+                    has_no_streams = False
                     if stderr_log_path and os.path.exists(stderr_log_path):
                         try:
                             with open(stderr_log_path, 'r', encoding='utf-8', errors='ignore') as f:
                                 stderr_content = f.read()
                                 if stderr_content:
+                                    # 检查是否是"没有流"的错误
+                                    if 'does not contain any stream' in stderr_content or 'no stream' in stderr_content.lower():
+                                        has_no_streams = True
                                     lines = stderr_content.strip().split('\n')
                                     error_details = '\n'.join(lines[-5:]) if len(lines) > 5 else stderr_content
                         except Exception:
                             pass
+                    
+                    # 如果文件没有有效流，删除损坏的文件
+                    if has_no_streams:
+                        try:
+                            if os.path.exists(ts_file_path):
+                                os.remove(ts_file_path)
+                                self.logger.warning(f'Removed invalid .ts segment (no streams): {os.path.basename(ts_file_path)}')
+                        except Exception:
+                            pass
+                        return
                     
                     if e.exit_code and e.exit_code != 255:
                         error_msg = f'Error converting segment {os.path.basename(ts_file_path)}'
@@ -137,9 +151,17 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                     prev_ts_file = current_file
                     # Generate final filename by replacing .ts with .mp4
                     prev_final_filename = prev_ts_file.replace('.ts', '.' + CONTAINER)
-                    if os.path.exists(prev_ts_file) and os.path.getsize(prev_ts_file) > 0:
+                    # 检查文件大小，太小的文件可能不包含有效流（至少需要几KB）
+                    if os.path.exists(prev_ts_file) and os.path.getsize(prev_ts_file) > 1024:  # 至少 1KB
                         segment_files.append((prev_ts_file, prev_final_filename))
                         convert_segment_to_mp4(prev_ts_file, prev_final_filename)
+                    elif os.path.exists(prev_ts_file):
+                        # 文件太小，可能是无效的，删除它
+                        try:
+                            os.remove(prev_ts_file)
+                            self.logger.warning(f'Removed too small segment (likely invalid): {os.path.basename(prev_ts_file)}')
+                        except Exception:
+                            pass
                     
                     # Generate new filename with timestamp (like pause/resume)
                     new_filename = self.genOutFilename(create_dir=True)
@@ -174,9 +196,18 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                         chunk_uri = '/'.join(url.split('.m3u8')[0].split('/')[:-1]) + '/' + chunk_uri
                     m = session.get(chunk_uri, headers=self.headers, cookies=self.cookies, timeout=30)
                     if m.status_code != 200:
+                        # 网络错误时，如果当前文件很小（可能不完整），删除它
+                        if segment_during_download and current_file and os.path.exists(current_file):
+                            try:
+                                if os.path.getsize(current_file) < 1024:  # 小于 1KB 可能是无效文件
+                                    os.remove(current_file)
+                                    self.logger.warning(f'Removed incomplete segment due to network error: {os.path.basename(current_file)}')
+                            except Exception:
+                                pass
                         return
                     file_handle = get_output_file()
                     file_handle.write(m.content)
+                    file_handle.flush()  # 立即刷新缓冲区，确保数据写入磁盘
                     if segment_during_download:
                         current_file_size += len(m.content)
                     if self.stopDownloadFlag:
@@ -205,7 +236,8 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
         sleep(0.5)
         
         # Convert the last segment that might still be in .ts format
-        if current_file and os.path.exists(current_file) and os.path.getsize(current_file) > 0:
+        # 检查文件大小，太小的文件可能不包含有效流
+        if current_file and os.path.exists(current_file) and os.path.getsize(current_file) > 1024:  # 至少 1KB
             final_filename = current_file.replace('.ts', '.' + CONTAINER)
             stderr_log_path = final_filename + '.postprocess_stderr.log'
             try:
@@ -240,15 +272,29 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
             except FFRuntimeError as e:
                 # 读取 stderr 日志以获取详细错误信息
                 error_details = ""
+                has_no_streams = False
                 if stderr_log_path and os.path.exists(stderr_log_path):
                     try:
                         with open(stderr_log_path, 'r', encoding='utf-8', errors='ignore') as f:
                             stderr_content = f.read()
                             if stderr_content:
+                                # 检查是否是"没有流"的错误
+                                if 'does not contain any stream' in stderr_content or 'no stream' in stderr_content.lower():
+                                    has_no_streams = True
                                 lines = stderr_content.strip().split('\n')
                                 error_details = '\n'.join(lines[-5:]) if len(lines) > 5 else stderr_content
                     except Exception:
                         pass
+                
+                # 如果文件没有有效流，删除损坏的文件
+                if has_no_streams:
+                    try:
+                        if current_file and os.path.exists(current_file):
+                            os.remove(current_file)
+                            self.logger.warning(f'Removed invalid final .ts segment (no streams): {os.path.basename(current_file)}')
+                    except Exception:
+                        pass
+                    return
                 
                 if e.exit_code and e.exit_code != 255:
                     error_msg = f'Error converting final segment {os.path.basename(current_file)}'
