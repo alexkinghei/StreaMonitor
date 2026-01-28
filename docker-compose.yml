@@ -37,6 +37,11 @@ services:
       # Example: "838860800" (800 MB in bytes), "800M" (800 MB), "1G" (1 GB)
       # If not set, videos will be downloaded as a single file
       STRMNTR_SEGMENT_SIZE: "800M"
+      # HLS resiliency: tolerate short transient disconnects without splitting into many short files
+      # During this grace window, playlist/chunk failures will be retried instead of ending the recording.
+      STRMNTR_HLS_GRACE_SECONDS: "80"
+      # Sleep between transient retries (reduce log spam by increasing this)
+      STRMNTR_HLS_RETRY_SLEEP: "5"
     volumes:
       - ./downloads:/app/downloads
       - ./config.json:/app/config.json
