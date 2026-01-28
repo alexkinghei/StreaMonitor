@@ -10,12 +10,14 @@ _http_lib = None
 if not _http_lib:
     try:
         import pycurl_requests as requests
+        from pycurl_requests.exceptions import ConnectionError, Timeout, RequestException
         _http_lib = 'pycurl'
     except ImportError:
         pass
 if not _http_lib:
     try:
         import requests
+        from requests.exceptions import ConnectionError, Timeout, RequestException
         _http_lib = 'requests'
     except ImportError:
         pass
@@ -72,7 +74,8 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                         
                         # 明确指定输入格式为 mpegts（TS 格式），避免 FFmpeg 误识别
                         # 对于可能损坏的文件，添加错误恢复选项
-                        input_options = '-f mpegts -err_detect ignore_err'
+                        # 增加 analyzeduration 和 probesize 以处理损坏的文件头部
+                        input_options = '-f mpegts -err_detect ignore_err -analyzeduration 20000000 -probesize 50000000'
                         ff = FFmpeg(executable=FFMPEG_PATH, inputs={ts_file_path: input_options}, outputs={final_filename: output_str})
                         ff.run(stdout=stdout, stderr=stderr_file)
                         
@@ -178,7 +181,16 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
         try:
             did_download = False
             while not self.stopDownloadFlag:
-                r = session.get(url, headers=self.headers, cookies=self.cookies, timeout=30)
+                try:
+                    r = session.get(url, headers=self.headers, cookies=self.cookies, timeout=30)
+                except (ConnectionError, Timeout, RequestException) as e:
+                    error_msg = str(e)
+                    if len(error_msg) > 200:
+                        error_msg = error_msg[:200] + '...'
+                    self.logger.warning(f'Network error fetching playlist ({type(e).__name__}): {error_msg}')
+                    sleep(5)  # Wait before retrying
+                    continue
+                
                 content = r.content.decode("utf-8")
                 if m3u_processor:
                     content = m3u_processor(content)
@@ -194,8 +206,13 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                     self.debug('Downloading ' + chunk_uri)
                     if not chunk_uri.startswith("https://"):
                         chunk_uri = '/'.join(url.split('.m3u8')[0].split('/')[:-1]) + '/' + chunk_uri
-                    m = session.get(chunk_uri, headers=self.headers, cookies=self.cookies, timeout=30)
-                    if m.status_code != 200:
+                    try:
+                        m = session.get(chunk_uri, headers=self.headers, cookies=self.cookies, timeout=30)
+                    except (ConnectionError, Timeout, RequestException) as e:
+                        error_msg = str(e)
+                        if len(error_msg) > 200:
+                            error_msg = error_msg[:200] + '...'
+                        self.logger.warning(f'Network error downloading chunk ({type(e).__name__}): {error_msg}')
                         # 网络错误时，如果当前文件很小（可能不完整），删除它
                         if segment_during_download and current_file and os.path.exists(current_file):
                             try:
@@ -204,7 +221,18 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                                     self.logger.warning(f'Removed incomplete segment due to network error: {os.path.basename(current_file)}')
                             except Exception:
                                 pass
-                        return
+                        continue  # Skip this chunk and try next one
+                    
+                    if m.status_code != 200:
+                        # HTTP 错误时，如果当前文件很小（可能不完整），删除它
+                        if segment_during_download and current_file and os.path.exists(current_file):
+                            try:
+                                if os.path.getsize(current_file) < 1024:  # 小于 1KB 可能是无效文件
+                                    os.remove(current_file)
+                                    self.logger.warning(f'Removed incomplete segment due to HTTP error: {os.path.basename(current_file)}')
+                            except Exception:
+                                pass
+                        continue  # Skip this chunk and try next one
                     file_handle = get_output_file()
                     file_handle.write(m.content)
                     file_handle.flush()  # 立即刷新缓冲区，确保数据写入磁盘
@@ -251,7 +279,8 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                     
                     # 明确指定输入格式为 mpegts（TS 格式），避免 FFmpeg 误识别
                     # 对于可能损坏的文件，添加错误恢复选项
-                    input_options = '-f mpegts -err_detect ignore_err'
+                    # 增加 analyzeduration 和 probesize 以处理损坏的文件头部
+                    input_options = '-f mpegts -err_detect ignore_err -analyzeduration 20000000 -probesize 50000000'
                     ff = FFmpeg(executable=FFMPEG_PATH, inputs={current_file: input_options}, outputs={final_filename: output_str})
                     ff.run(stdout=stdout, stderr=stderr_file)
                     
@@ -342,7 +371,11 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
             stdout = open(filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
             stderr = open(filename + '.postprocess_stderr.log', 'w+') if DEBUG else subprocess.DEVNULL
             output_str = '-c:a copy -c:v copy'
-            ff = FFmpeg(executable=FFMPEG_PATH, inputs={tmpfilename: None}, outputs={filename: output_str})
+            # 明确指定输入格式为 mpegts（TS 格式），避免 FFmpeg 误识别
+            # 对于可能损坏的文件，添加错误恢复选项
+            # 增加 analyzeduration 和 probesize 以处理损坏的文件头部
+            input_options = '-f mpegts -err_detect ignore_err -analyzeduration 20000000 -probesize 50000000'
+            ff = FFmpeg(executable=FFMPEG_PATH, inputs={tmpfilename: input_options}, outputs={filename: output_str})
             ff.run(stdout=stdout, stderr=stderr)
             os.remove(tmpfilename)
         except FFRuntimeError as e:
