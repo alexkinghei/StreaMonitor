@@ -77,6 +77,9 @@ class Bot(Thread):
         self.getVideo = getVideoFfmpeg
         self.stopDownload = None
         self.recording = False
+        # When True, the current recording should be stopped and immediately restarted
+        # (used for "cut file" / start a new output file without pausing the streamer).
+        self._cut_recording_requested = False
         self.video_files = []
         self.video_files_total_size = 0
         self.cache_file_list()
@@ -172,6 +175,20 @@ class Bot(Thread):
             self.stopDownload()
             self.recording = False
 
+    def request_cut_recording(self):
+        """
+        Request the current recording to be cut into a new file.
+        This will stop the current download (closing/flushing the current file),
+        and the main loop will immediately start a new recording file if the stream is still live.
+        """
+        if not self.running:
+            return "Streamer not running"
+        if not self.recording or not self.stopDownload:
+            return "Streamer is not currently recording"
+        self._cut_recording_requested = True
+        self._stop_recording_gracefully("manual cut")
+        return "OK"
+
     def run(self):
         while not self.quitting:
             while not self.running and not self.quitting:
@@ -230,6 +247,11 @@ class Bot(Thread):
                             self.recording = False
                             self.log('Recording ended')
                             self.cache_file_list()
+                            # If a manual cut was requested, immediately re-enter the loop so we
+                            # start a new file without waiting for the normal sleep interval.
+                            if self._cut_recording_requested:
+                                self._cut_recording_requested = False
+                                continue
                 except Exception as e:
                     self.logger.exception(e)
                     self._stop_recording_gracefully("exception")

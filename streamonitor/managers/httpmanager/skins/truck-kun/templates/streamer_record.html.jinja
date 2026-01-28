@@ -49,6 +49,18 @@
         </button>
     </td>
     <td class="center">
+        <button hx-patch="/cut/{{ streamer.username }}/{{ streamer.site }}"
+            hx-trigger="click"
+            hx-target="closest .streamer"
+            hx-sync="closest .streamer:replace"
+            hx-swap="outerHTML"
+            hx-disabled-elt="this"
+            title="切割文件"
+            {{ 'disabled' if not streamer.recording }}>
+            <i class="icon feather icon-scissors"></i>
+        </button>
+    </td>
+    <td class="center">
         <button hx-delete="/remove/{{ streamer.username }}/{{ streamer.site }}"
             hx-trigger="click"
             hx-target="closest .streamer"

@@ -407,6 +407,28 @@ class HTTPManager(Manager):
             }
             return render_template('streamer_record.html.jinja', **context), status_code
 
+        @app.route("/cut/<user>/<site>", methods=['PATCH'])
+        @login_required
+        def cut_streamer_recording(user, site):
+            streamer = self.getStreamer(user, site)
+            status_code = 500
+            res = "Streamer not found"
+            has_error = True
+            if streamer is None:
+                status_code = 500
+            else:
+                res = self.do_cut(streamer, user, site)
+                if res == "OK":
+                    has_error = False
+                    status_code = 200
+            context = {
+                'streamer': streamer,
+                'streamer_has_error': has_error,
+                'streamer_error_message': res,
+                'confirm_deletes': confirm_deletes(request.headers.get('User-Agent')),
+            }
+            return render_template('streamer_record.html.jinja', **context), status_code
+
         @app.route("/toggle/<user>/<site>/recording", methods=['PATCH'])
         @login_required
         def toggle_streamer_recording_page(user, site):

@@ -57,6 +57,18 @@
                         </button>
                     </li>
                     <li>
+                        <button class="dropdown-item"
+                            hx-patch="/cut/{{ streamer.username }}/{{ streamer.site }}"
+                            hx-trigger="click"
+                            hx-target="closest .streamer-card"
+                            hx-sync="closest .streamer-card:replace"
+                            hx-swap="outerHTML"
+                            hx-disabled-elt="this"
+                            {% if not streamer.recording %}disabled{% endif %}>
+                            <i class="bi bi-scissors me-2"></i>Cut File
+                        </button>
+                    </li>
+                    <li>
                         <button class="dropdown-item text-info"
                             hx-get="/streamer-info/{{ streamer.username }}/{{ streamer.site }}"
                             hx-trigger="click"

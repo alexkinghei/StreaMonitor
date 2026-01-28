@@ -126,6 +126,19 @@ class Manager(Thread):
             return "Streamer not found"
         self.do_stop(streamer, username, site)
         return self.do_start(streamer, username, site)
+
+    def do_cut(self, streamer, username, site):
+        """
+        Stop the current recording file for a streamer and immediately start a new file.
+        Only works while the streamer is running and actively recording.
+        """
+        if not streamer:
+            return "Streamer not found"
+        try:
+            return streamer.request_cut_recording()
+        except Exception as e:
+            self.logger.error(e)
+            return "Failed to cut recording"
         
     def do_status(self, streamer, username, site):
         output = [["Username", "Site", "Started", "Status"]]
