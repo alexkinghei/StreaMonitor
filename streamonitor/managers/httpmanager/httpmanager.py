@@ -429,6 +429,28 @@ class HTTPManager(Manager):
             }
             return render_template('streamer_record.html.jinja', **context), status_code
 
+        @app.route("/convert-ts/<user>/<site>", methods=['PATCH'])
+        @login_required
+        def convert_ts_files(user, site):
+            streamer = self.getStreamer(user, site)
+            status_code = 500
+            res = "Streamer not found"
+            has_error = True
+            if streamer is None:
+                status_code = 500
+            else:
+                res = self.do_convert_ts(streamer, user, site)
+                if res.startswith("OK"):
+                    has_error = False
+                    status_code = 200
+            context = {
+                'streamer': streamer,
+                'streamer_has_error': has_error,
+                'streamer_error_message': res,
+                'confirm_deletes': confirm_deletes(request.headers.get('User-Agent')),
+            }
+            return render_template('streamer_record.html.jinja', **context), status_code
+
         @app.route("/toggle/<user>/<site>/recording", methods=['PATCH'])
         @login_required
         def toggle_streamer_recording_page(user, site):

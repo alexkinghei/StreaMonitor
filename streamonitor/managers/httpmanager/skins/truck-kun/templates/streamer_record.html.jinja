@@ -61,6 +61,17 @@
         </button>
     </td>
     <td class="center">
+        <button hx-patch="/convert-ts/{{ streamer.username }}/{{ streamer.site }}"
+            hx-trigger="click"
+            hx-target="closest .streamer"
+            hx-sync="closest .streamer:replace"
+            hx-swap="outerHTML"
+            hx-disabled-elt="this"
+            title="转换残留 ts 为 mp4">
+            <i class="icon feather icon-repeat"></i>
+        </button>
+    </td>
+    <td class="center">
         <button hx-delete="/remove/{{ streamer.username }}/{{ streamer.site }}"
             hx-trigger="click"
             hx-target="closest .streamer"

@@ -139,6 +139,19 @@ class Manager(Thread):
         except Exception as e:
             self.logger.error(e)
             return "Failed to cut recording"
+
+    def do_convert_ts(self, streamer, username, site):
+        """
+        Convert leftover .ts files to .mp4 in the streamer's output folder.
+        Damaged .ts files are deleted. No postprocess log files are created.
+        """
+        if not streamer:
+            return "Streamer not found"
+        try:
+            return streamer.convert_residual_ts_to_mp4()
+        except Exception as e:
+            self.logger.error(e)
+            return "Failed to convert ts"
         
     def do_status(self, streamer, username, site):
         output = [["Username", "Site", "Started", "Status"]]

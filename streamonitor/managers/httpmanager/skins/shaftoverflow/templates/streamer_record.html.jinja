@@ -69,6 +69,17 @@
                         </button>
                     </li>
                     <li>
+                        <button class="dropdown-item"
+                            hx-patch="/convert-ts/{{ streamer.username }}/{{ streamer.site }}"
+                            hx-trigger="click"
+                            hx-target="closest .streamer-card"
+                            hx-sync="closest .streamer-card:replace"
+                            hx-swap="outerHTML"
+                            hx-disabled-elt="this">
+                            <i class="bi bi-arrow-repeat me-2"></i>Convert TS to MP4
+                        </button>
+                    </li>
+                    <li>
                         <button class="dropdown-item text-info"
                             hx-get="/streamer-info/{{ streamer.username }}/{{ streamer.site }}"
                             hx-trigger="click"

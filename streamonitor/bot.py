@@ -1,10 +1,12 @@
 from __future__ import unicode_literals
 import os
+import subprocess
 import traceback
 from enum import Enum
 
 import m3u8
 from time import sleep
+import time
 from datetime import datetime
 from threading import Thread
 
@@ -13,7 +15,7 @@ import requests.cookies
 
 from streamonitor.enums import Status, COUNTRIES, Gender, GENDER_DATA
 import streamonitor.log as log
-from parameters import DOWNLOADS_DIR, DEBUG, WANTED_RESOLUTION, WANTED_RESOLUTION_PREFERENCE, CONTAINER, HTTP_USER_AGENT
+from parameters import DOWNLOADS_DIR, DEBUG, WANTED_RESOLUTION, WANTED_RESOLUTION_PREFERENCE, CONTAINER, HTTP_USER_AGENT, FFMPEG_PATH
 from streamonitor.downloaders.ffmpeg import getVideoFfmpeg
 from streamonitor.models import VideoData
 
@@ -188,6 +190,103 @@ class Bot(Thread):
         self._cut_recording_requested = True
         self._stop_recording_gracefully("manual cut")
         return "OK"
+
+    def convert_residual_ts_to_mp4(self):
+        """
+        Convert leftover .ts files (and remove them) in the streamer's output folder.
+        - Successful remux: .ts -> .mp4 (copy streams) and delete the .ts
+        - Broken/invalid .ts: delete the .ts
+        - .tmp.ts: always delete
+        No postprocess stderr/stdout log files are created.
+        """
+        folder = self.outputFolder
+        if not os.path.isdir(folder):
+            return "No folder"
+
+        converted = 0
+        deleted = 0
+        skipped = 0
+        # Additional safety to avoid racing with very recent writes or late close.
+        # Any .ts modified within this window will be skipped.
+        recent_write_grace_seconds = 120
+
+        def unique_mp4_path(base_mp4_path: str) -> str:
+            if not os.path.exists(base_mp4_path):
+                return base_mp4_path
+            root, ext = os.path.splitext(base_mp4_path)
+            i = 1
+            while True:
+                candidate = f"{root}--recovered-{i}{ext}"
+                if not os.path.exists(candidate):
+                    return candidate
+                i += 1
+
+        for entry in os.scandir(folder):
+            if not entry.is_file():
+                continue
+            name_lower = entry.name.lower()
+            if name_lower.endswith(".postprocess_stderr.log") or name_lower.endswith(".postprocess_stdout.log"):
+                # Do not touch logs; just avoid treating them as media.
+                continue
+            if not name_lower.endswith(".ts"):
+                continue
+
+            ts_path = entry.path
+            # If the file is very recently modified, assume it might still be in use.
+            try:
+                if (time.time() - entry.stat().st_mtime) < recent_write_grace_seconds:
+                    skipped += 1
+                    continue
+            except OSError:
+                skipped += 1
+                continue
+            if name_lower.endswith(".tmp.ts"):
+                try:
+                    os.remove(ts_path)
+                    deleted += 1
+                except OSError:
+                    pass
+                continue
+
+            mp4_path = unique_mp4_path(os.path.splitext(ts_path)[0] + ".mp4")
+
+            try:
+                # Remux (copy A/V) into MP4 container; suppress all output.
+                # If it fails (damaged file), delete the ts.
+                subprocess.run(
+                    [FFMPEG_PATH, "-y", "-i", ts_path, "-c", "copy", mp4_path],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=True,
+                )
+                try:
+                    os.remove(ts_path)
+                except OSError:
+                    pass
+                converted += 1
+            except Exception:
+                # Treat as damaged/unreadable; remove the ts and any partial mp4.
+                try:
+                    if os.path.exists(mp4_path):
+                        os.remove(mp4_path)
+                except OSError:
+                    pass
+                try:
+                    os.remove(ts_path)
+                    deleted += 1
+                except OSError:
+                    pass
+                    skipped += 1
+
+        # Update file cache so UI can reflect changes if it refreshes.
+        try:
+            self.cache_file_list()
+        except Exception:
+            pass
+
+        if converted == 0 and deleted == 0 and skipped == 0:
+            return "No ts files"
+        return f"OK (converted={converted}, deleted={deleted}, skipped={skipped})"
 
     def run(self):
         while not self.quitting:
