@@ -35,14 +35,16 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
     error = False
     tmpfilename = filename[:-len('.' + CONTAINER)] + '.tmp.ts'
     session = requests.Session()
-    
+    # Mutable so we can refresh playlist URL when stream changes bitrate/variants
+    url_ref = [url]
+
     # Check if we should segment during download
     segment_size_bytes = parse_segment_size(SEGMENT_SIZE)
     segment_during_download = segment_size_bytes is not None
     current_file = None
     current_file_size = 0
     segment_files = []  # Track all segment files for final conversion
-    
+
     if segment_during_download:
         # Use the initial filename for first segment (but as .ts)
         current_file = filename[:-len('.' + CONTAINER)] + '.ts'
@@ -56,6 +58,18 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
 
         def within_grace():
             return (time.monotonic() - last_success) <= float(HLS_TRANSIENT_GRACE_SECONDS)
+
+        def try_refresh_url():
+            """On bitrate/playlist change, get fresh playlist URL and continue same recording."""
+            try:
+                new_url = self.getVideoUrl()
+                if new_url:
+                    url_ref[0] = new_url
+                    self.logger.info('Refreshed playlist URL (stream may have changed bitrate/variants)')
+                    return True
+            except Exception as e:
+                self.logger.debug('Refresh playlist URL failed: %s', e)
+            return False
         
         def convert_segment_to_mp4(ts_file_path, final_filename):
             """Convert a .ts segment file to final format (MP4) in background thread"""
@@ -131,11 +145,14 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
             did_download = False
             while not self.stopDownloadFlag:
                 try:
-                    r = session.get(url, headers=self.headers, cookies=self.cookies, timeout=30)
+                    r = session.get(url_ref[0], headers=self.headers, cookies=self.cookies, timeout=30)
                 except Exception as e:
                     if within_grace():
-                        self.logger.warning('HLS playlist fetch failed (transient, retrying): %s', e)
-                        sleep(float(HLS_RETRY_SLEEP_SECONDS))
+                        if try_refresh_url():
+                            sleep(float(HLS_RETRY_SLEEP_SECONDS))
+                        else:
+                            self.logger.warning('HLS playlist fetch failed (transient, retrying): %s', e)
+                            sleep(float(HLS_RETRY_SLEEP_SECONDS))
                         continue
                     self.logger.warning('HLS playlist fetch failed (giving up): %s', e)
                     error = True
@@ -147,6 +164,8 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                 if len(chunklist.segments) == 0:
                     # Sometimes live playlists temporarily return empty; tolerate within grace.
                     if within_grace():
+                        if try_refresh_url():
+                            pass
                         sleep(float(HLS_RETRY_SLEEP_SECONDS))
                         continue
                     return
@@ -158,22 +177,28 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                     chunk_uri = chunk.uri
                     self.debug('Downloading ' + chunk_uri)
                     if not chunk_uri.startswith("https://"):
-                        chunk_uri = '/'.join(url.split('.m3u8')[0].split('/')[:-1]) + '/' + chunk_uri
+                        chunk_uri = '/'.join(url_ref[0].split('.m3u8')[0].split('/')[:-1]) + '/' + chunk_uri
                     try:
                         m = session.get(chunk_uri, headers=self.headers, cookies=self.cookies, timeout=30)
                     except Exception as e:
                         if within_grace():
+                            downloaded_list.pop()  # retry this chunk next time
+                            if try_refresh_url():
+                                break
                             self.logger.warning('HLS chunk fetch failed (transient, retrying): %s', e)
                             sleep(float(HLS_RETRY_SLEEP_SECONDS))
-                            continue
+                            break
                         self.logger.warning('HLS chunk fetch failed (giving up): %s', e)
                         error = True
                         return
                     if m.status_code != 200:
                         if within_grace():
+                            downloaded_list.pop()
+                            if try_refresh_url():
+                                break
                             self.logger.warning('HLS chunk status %s (transient, retrying)', m.status_code)
                             sleep(float(HLS_RETRY_SLEEP_SECONDS))
-                            continue
+                            break
                         return
                     file_handle = get_output_file()
                     file_handle.write(m.content)
