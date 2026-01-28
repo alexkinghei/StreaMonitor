@@ -69,8 +69,6 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                     stdout = open(final_filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
                     stderr = open(final_filename + '.postprocess_stderr.log', 'w+') if DEBUG else subprocess.DEVNULL
                     output_str = '-c:a copy -c:v copy'
-                    if CONTAINER == 'mp4':
-                        output_str += ' -movflags +faststart'
                     ff = FFmpeg(executable=FFMPEG_PATH, inputs={ts_file_path: None}, outputs={final_filename: output_str})
                     ff.run(stdout=stdout, stderr=stderr)
                     os.remove(ts_file_path)
@@ -195,8 +193,6 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                     stdout = open(final_filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
                     stderr_file = open(stderr_path, 'w+')
                     output_str = '-c:a copy -c:v copy'
-                    if CONTAINER == 'mp4':
-                        output_str += ' -movflags +faststart'
                     ff = FFmpeg(executable=FFMPEG_PATH, inputs={current_file: None}, outputs={final_filename: output_str})
                     ff.run(stdout=stdout, stderr=stderr_file)
                     stderr_file.close()

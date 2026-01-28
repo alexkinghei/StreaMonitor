@@ -182,8 +182,17 @@ class StripChat(RoomIdBot):
             # ! shell/history; ~ ～ and emoji can cause ffmpeg exit 254/183
             invalid_chars = r'[<>:"/\\|?*!\x00-\x1f~～]'
             topic = re.sub(invalid_chars, '_', str(topic))
-            # Remove emoji and other symbols that break ffmpeg/paths (So=Symbol other, Sk=Symbol modifier)
-            topic = ''.join(c for c in topic if unicodedata.category(c) not in ('So', 'Sk') and ord(c) < 0x10000)
+            # Remove emoji / symbols / format chars that can break paths or make ffmpeg unable to re-open files
+            # - So/Sk: emojis and other symbols
+            # - Cf: zero-width / format chars (e.g. U+200B) that make filenames look identical but differ in bytes
+            topic = ''.join(
+                c for c in topic
+                if unicodedata.category(c) not in ('So', 'Sk', 'Cf') and ord(c) < 0x10000
+            )
+            # Collapse whitespace to '_' to avoid odd unicode spaces in filenames
+            topic = re.sub(r'\s+', '_', topic)
+            # Collapse multiple underscores
+            topic = re.sub(r'_+', '_', topic)
             # Remove leading/trailing spaces and dots
             topic = topic.strip(' ._')
             # Limit topic by UTF-8 byte length (80 bytes) so filename stays safe and avoids ffmpeg/path issues
