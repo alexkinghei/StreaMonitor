@@ -6,6 +6,7 @@ import os
 import json
 import logging
 import subprocess
+import sys
 import time
 
 from ffmpy import FFmpeg, FFRuntimeError
@@ -149,29 +150,35 @@ class HTTPManager(Manager):
                         skipped.append(rel_path)
                         continue
                     mp4_path = full_path[:-3] + CONTAINER
+                    self.logger.info(f"[cleanup-ts] Converting: {rel_path} -> .{CONTAINER}")
+                    sys.stdout.flush()
+                    sys.stderr.flush()
                     try:
                         ff = FFmpeg(
                             executable=FFMPEG_PATH,
                             inputs={full_path: None},
                             outputs={mp4_path: '-c:a copy -c:v copy -movflags +faststart' if CONTAINER == 'mp4' else '-c:a copy -c:v copy'},
                         )
-                        ff.run(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        ff.run(stdout=sys.stdout, stderr=sys.stderr)
                         try:
                             os.remove(full_path)
                         except OSError:
                             pass
+                        self.logger.info(f"[cleanup-ts] Done: {rel_path}")
                         converted_ok.append(rel_path)
                     except FFRuntimeError as e:
                         try:
                             os.remove(full_path)
                         except OSError:
                             pass
+                        self.logger.warning(f"[cleanup-ts] Failed: {rel_path} (ffmpeg exit {e.exit_code})")
                         converted_failed.append({"path": rel_path, "reason": f"ffmpeg exit {e.exit_code}"})
                     except Exception as e:
                         try:
                             os.remove(full_path)
                         except OSError:
                             pass
+                        self.logger.warning(f"[cleanup-ts] Failed: {rel_path} ({e})")
                         converted_failed.append({"path": rel_path, "reason": str(e)})
             return Response(json.dumps({
                 "converted_ok": converted_ok,
