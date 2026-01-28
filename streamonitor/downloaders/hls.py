@@ -49,8 +49,14 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
         downloaded_list = []
         outfile = [None]  # Use list to allow modification in nested function
         
-        def convert_segment_to_mp4(ts_file_path, final_filename):
-            """Convert a .ts segment file to final format (MP4) in background thread"""
+        def convert_segment_to_mp4(ts_file_path, final_filename, sync=False):
+            """Convert a .ts segment file to final format (MP4)
+            
+            Args:
+                ts_file_path: Path to the .ts file
+                final_filename: Target output filename
+                sync: If True, convert synchronously (block until done). If False, convert in background thread.
+            """
             def convert():
                 stderr_log_path = None
                 try:
@@ -135,11 +141,15 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                     self.logger.error(f'Unexpected error converting segment {os.path.basename(ts_file_path)}: {e}')
                     # Keep the .ts file if conversion fails so it can be retried later
             
-            # Run conversion in background thread (like pause/resume does)
-            convert_thread = Thread(target=convert, daemon=False)  # Non-daemon so it completes even if main thread exits
-            convert_thread.start()
-            conversion_threads.append(convert_thread)  # Track the thread
-            return convert_thread
+            if sync:
+                # 同步转换：直接执行，用于断流时立即封装
+                convert()
+            else:
+                # 异步转换：在后台线程中执行
+                convert_thread = Thread(target=convert, daemon=False)  # Non-daemon so it completes even if main thread exits
+                convert_thread.start()
+                conversion_threads.append(convert_thread)  # Track the thread
+                return convert_thread
         
         def get_output_file():
             nonlocal current_file, current_file_size, segment_files
@@ -180,14 +190,56 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
         
         try:
             did_download = False
+            consecutive_failures = 0  # 连续失败计数器
+            max_consecutive_failures = 5  # 连续失败阈值，达到此值认为断流
+            
             while not self.stopDownloadFlag:
                 try:
                     r = session.get(url, headers=self.headers, cookies=self.cookies, timeout=30)
+                    consecutive_failures = 0  # 成功获取播放列表，重置失败计数
                 except (ConnectionError, Timeout, RequestException) as e:
+                    consecutive_failures += 1
                     error_msg = str(e)
                     if len(error_msg) > 200:
                         error_msg = error_msg[:200] + '...'
-                    self.logger.warning(f'Network error fetching playlist ({type(e).__name__}): {error_msg}')
+                    self.logger.warning(f'Network error fetching playlist ({type(e).__name__}): {error_msg} (连续失败: {consecutive_failures}/{max_consecutive_failures})')
+                    
+                    # 检测到断流：立即封装并转换当前文件
+                    if consecutive_failures >= max_consecutive_failures:
+                        self.logger.warning(f'检测到断流（连续失败 {consecutive_failures} 次），立即封装已录制内容...')
+                        # 关闭当前文件
+                        if outfile[0] and not outfile[0].closed:
+                            outfile[0].flush()
+                            outfile[0].close()
+                        
+                        # 如果当前文件有足够内容，立即同步转换
+                        if segment_during_download and current_file and os.path.exists(current_file):
+                            file_size = os.path.getsize(current_file)
+                            if file_size > 1024:  # 至少 1KB
+                                final_filename = current_file.replace('.ts', '.' + CONTAINER)
+                                self.logger.info(f'正在转换当前段（{file_size} 字节）: {os.path.basename(current_file)} -> {os.path.basename(final_filename)}')
+                                convert_segment_to_mp4(current_file, final_filename, sync=True)
+                                self.logger.info(f'断流时已成功封装: {os.path.basename(final_filename)}')
+                            else:
+                                # 文件太小，删除
+                                try:
+                                    os.remove(current_file)
+                                    self.logger.warning(f'删除过小的段文件: {os.path.basename(current_file)}')
+                                except Exception:
+                                    pass
+                        
+                        # 重置文件状态，准备重连后创建新文件
+                        if segment_during_download:
+                            new_filename = self.genOutFilename(create_dir=True)
+                            current_file = new_filename[:-len('.' + CONTAINER)] + '.ts'
+                            current_file_size = 0
+                        
+                        # 等待一段时间后尝试重连
+                        self.logger.info(f'等待 10 秒后尝试重新连接...')
+                        sleep(10)
+                        consecutive_failures = 0  # 重置计数器，准备重连
+                        continue
+                    
                     sleep(5)  # Wait before retrying
                     continue
                 
@@ -197,6 +249,8 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                 chunklist = m3u8.loads(content)
                 if len(chunklist.segments) == 0:
                     return
+                
+                chunk_failures = 0  # 本次循环中的chunk下载失败计数
                 for chunk in chunklist.segment_map + chunklist.segments:
                     if chunk.uri in downloaded_list:
                         continue
@@ -208,12 +262,52 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                         chunk_uri = '/'.join(url.split('.m3u8')[0].split('/')[:-1]) + '/' + chunk_uri
                     try:
                         m = session.get(chunk_uri, headers=self.headers, cookies=self.cookies, timeout=30)
+                        chunk_failures = 0  # 成功下载，重置chunk失败计数
                     except (ConnectionError, Timeout, RequestException) as e:
+                        chunk_failures += 1
+                        consecutive_failures += 1
                         error_msg = str(e)
                         if len(error_msg) > 200:
                             error_msg = error_msg[:200] + '...'
-                        self.logger.warning(f'Network error downloading chunk ({type(e).__name__}): {error_msg}')
-                        # 网络错误时，如果当前文件很小（可能不完整），删除它
+                        self.logger.warning(f'Network error downloading chunk ({type(e).__name__}): {error_msg} (连续失败: {consecutive_failures}/{max_consecutive_failures})')
+                        
+                        # 检测到断流：立即封装并转换当前文件
+                        if consecutive_failures >= max_consecutive_failures:
+                            self.logger.warning(f'检测到断流（连续失败 {consecutive_failures} 次），立即封装已录制内容...')
+                            # 关闭当前文件
+                            if outfile[0] and not outfile[0].closed:
+                                outfile[0].flush()
+                                outfile[0].close()
+                            
+                            # 如果当前文件有足够内容，立即同步转换
+                            if segment_during_download and current_file and os.path.exists(current_file):
+                                file_size = os.path.getsize(current_file)
+                                if file_size > 1024:  # 至少 1KB
+                                    final_filename = current_file.replace('.ts', '.' + CONTAINER)
+                                    self.logger.info(f'正在转换当前段（{file_size} 字节）: {os.path.basename(current_file)} -> {os.path.basename(final_filename)}')
+                                    convert_segment_to_mp4(current_file, final_filename, sync=True)
+                                    self.logger.info(f'断流时已成功封装: {os.path.basename(final_filename)}')
+                                else:
+                                    # 文件太小，删除
+                                    try:
+                                        os.remove(current_file)
+                                        self.logger.warning(f'删除过小的段文件: {os.path.basename(current_file)}')
+                                    except Exception:
+                                        pass
+                            
+                            # 重置文件状态，准备重连后创建新文件
+                            if segment_during_download:
+                                new_filename = self.genOutFilename(create_dir=True)
+                                current_file = new_filename[:-len('.' + CONTAINER)] + '.ts'
+                                current_file_size = 0
+                            
+                            # 等待一段时间后尝试重连
+                            self.logger.info(f'等待 10 秒后尝试重新连接...')
+                            sleep(10)
+                            consecutive_failures = 0  # 重置计数器，准备重连
+                            break  # 跳出chunk循环，重新获取播放列表
+                        
+                        # 如果当前文件很小（可能不完整），删除它
                         if segment_during_download and current_file and os.path.exists(current_file):
                             try:
                                 if os.path.getsize(current_file) < 1024:  # 小于 1KB 可能是无效文件
@@ -224,6 +318,8 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                         continue  # Skip this chunk and try next one
                     
                     if m.status_code != 200:
+                        chunk_failures += 1
+                        consecutive_failures += 1
                         # HTTP 错误时，如果当前文件很小（可能不完整），删除它
                         if segment_during_download and current_file and os.path.exists(current_file):
                             try:
@@ -232,7 +328,47 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                                     self.logger.warning(f'Removed incomplete segment due to HTTP error: {os.path.basename(current_file)}')
                             except Exception:
                                 pass
+                        
+                        # 检测到断流
+                        if consecutive_failures >= max_consecutive_failures:
+                            self.logger.warning(f'检测到断流（连续失败 {consecutive_failures} 次），立即封装已录制内容...')
+                            # 关闭当前文件
+                            if outfile[0] and not outfile[0].closed:
+                                outfile[0].flush()
+                                outfile[0].close()
+                            
+                            # 如果当前文件有足够内容，立即同步转换
+                            if segment_during_download and current_file and os.path.exists(current_file):
+                                file_size = os.path.getsize(current_file)
+                                if file_size > 1024:  # 至少 1KB
+                                    final_filename = current_file.replace('.ts', '.' + CONTAINER)
+                                    self.logger.info(f'正在转换当前段（{file_size} 字节）: {os.path.basename(current_file)} -> {os.path.basename(final_filename)}')
+                                    convert_segment_to_mp4(current_file, final_filename, sync=True)
+                                    self.logger.info(f'断流时已成功封装: {os.path.basename(final_filename)}')
+                                else:
+                                    # 文件太小，删除
+                                    try:
+                                        os.remove(current_file)
+                                        self.logger.warning(f'删除过小的段文件: {os.path.basename(current_file)}')
+                                    except Exception:
+                                        pass
+                            
+                            # 重置文件状态，准备重连后创建新文件
+                            if segment_during_download:
+                                new_filename = self.genOutFilename(create_dir=True)
+                                current_file = new_filename[:-len('.' + CONTAINER)] + '.ts'
+                                current_file_size = 0
+                            
+                            # 等待一段时间后尝试重连
+                            self.logger.info(f'等待 10 秒后尝试重新连接...')
+                            sleep(10)
+                            consecutive_failures = 0  # 重置计数器，准备重连
+                            break  # 跳出chunk循环，重新获取播放列表
+                        
                         continue  # Skip this chunk and try next one
+                    
+                    # 成功下载chunk，重置连续失败计数
+                    consecutive_failures = 0
                     file_handle = get_output_file()
                     file_handle.write(m.content)
                     file_handle.flush()  # 立即刷新缓冲区，确保数据写入磁盘
