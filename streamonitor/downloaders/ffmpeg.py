@@ -7,6 +7,14 @@ import requests.cookies
 from threading import Thread
 from parameters import DEBUG, SEGMENT_SIZE, parse_segment_size, CONTAINER, FFMPEG_PATH, FFMPEG_READRATE
 
+# Stderr patterns that indicate stream/connection failure - trigger graceful stop so file is closed properly
+_STDERR_STREAM_ERROR_PATTERNS = (
+    'connection refused', 'connection reset', 'connection timed out',
+    'unable to open', 'failed to open', 'error opening', 'i/o error',
+    '403 forbidden', '404 not found', '500 internal', 'server returned',
+    'invalid data found', 'connection closed',
+)
+
 
 def getVideoFfmpeg(self, url, filename):
     cmd = [
@@ -88,13 +96,14 @@ def getVideoFfmpeg(self, url, filename):
     def execute():
         nonlocal error
         try:
-            stderr = open(filename + '.stderr.log', 'w+') if DEBUG else subprocess.DEVNULL
+            stderr_pipe = subprocess.PIPE
+            stderr_log = open(filename + '.stderr.log', 'w+') if DEBUG else None
             startupinfo = None
             if sys.platform == "win32":
                 startupinfo = subprocess.STARTUPINFO()
                 startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             process = subprocess.Popen(
-                args=cmd, stdin=subprocess.PIPE, stderr=stderr, stdout=subprocess.DEVNULL, startupinfo=startupinfo)
+                args=cmd, stdin=subprocess.PIPE, stderr=stderr_pipe, stdout=subprocess.DEVNULL, startupinfo=startupinfo)
         except OSError as e:
             if e.errno == errno.ENOENT:
                 self.logger.error('FFMpeg executable not found!')
@@ -105,6 +114,31 @@ def getVideoFfmpeg(self, url, filename):
                 error = True
                 return
 
+        def read_stderr():
+            """Monitor stderr for stream/connection errors; trigger graceful stop so file is closed properly."""
+            try:
+                for line in process.stderr:
+                    if line is None:
+                        break
+                    line_decoded = line.decode('utf-8', errors='replace') if isinstance(line, bytes) else str(line)
+                    if stderr_log:
+                        stderr_log.write(line_decoded)
+                        stderr_log.flush()
+                    line_lower = line_decoded.lower()
+                    if any(p in line_lower for p in _STDERR_STREAM_ERROR_PATTERNS):
+                        stopping.pls_stop()
+            except (ValueError, OSError):
+                pass
+            finally:
+                if stderr_log:
+                    try:
+                        stderr_log.close()
+                    except OSError:
+                        pass
+
+        stderr_thread = Thread(target=read_stderr, daemon=True)
+        stderr_thread.start()
+
         while process.poll() is None:
             if stopping.stop:
                 process.communicate(b'q')
@@ -112,6 +146,12 @@ def getVideoFfmpeg(self, url, filename):
             try:
                 process.wait(1)
             except subprocess.TimeoutExpired:
+                pass
+
+        if stderr_log and not stderr_log.closed:
+            try:
+                stderr_log.close()
+            except OSError:
                 pass
 
         if process.returncode and process.returncode != 0 and process.returncode != 255:

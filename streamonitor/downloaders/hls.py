@@ -139,6 +139,10 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                     sleep(10)
         finally:
             if outfile[0] and not outfile[0].closed:
+                try:
+                    outfile[0].flush()
+                except (OSError, ValueError):
+                    pass
                 outfile[0].close()
 
     def terminate():

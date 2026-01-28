@@ -44,10 +44,18 @@ def getVideoWSSVR(self, url, filename):
                                     if tj['message'] == 'ping':
                                         debug_('Server is not ready or there was a change')
                                         error = True
+                                        try:
+                                            outfile.flush()
+                                        except (OSError, ValueError):
+                                            pass
                                         return
                             except:
                                 debug_('Failed to open the connection')
                                 error = True
+                                try:
+                                    outfile.flush()
+                                except (OSError, ValueError):
+                                    pass
                                 return
 
                         while not self.stopDownloadFlag:
@@ -59,6 +67,10 @@ def getVideoWSSVR(self, url, filename):
                     debug_('Error when downloading')
                     debug_(wex)
                     error = True
+                    try:
+                        outfile.flush()
+                    except (OSError, ValueError):
+                        pass
                     return
 
     def terminate():

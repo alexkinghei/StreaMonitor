@@ -165,6 +165,13 @@ class Bot(Thread):
             if self.quitting or not self.running:
                 return
 
+    def _stop_recording_gracefully(self, reason="abnormal"):
+        """Stop ongoing recording like pause button does, so stream/file is closed properly."""
+        if self.recording and self.stopDownload:
+            self.log(f"Stopping recording ({reason})...")
+            self.stopDownload()
+            self.recording = False
+
     def run(self):
         while not self.quitting:
             while not self.running and not self.quitting:
@@ -183,11 +190,7 @@ class Bot(Thread):
                         self.log(self.status())
                         self.previous_status = self.sc
                     if self.sc == Status.ERROR:
-                        # Stop any ongoing recording gracefully (same as pause button)
-                        if self.recording and self.stopDownload:
-                            self.log("Stopping recording due to error...")
-                            self.stopDownload()
-                            self.recording = False
+                        self._stop_recording_gracefully("error")
                         self._sleep(self.sleep_on_error)
                     if self.sc == Status.OFFLINE:
                         offline_time += self.sleep_on_offline
@@ -229,10 +232,7 @@ class Bot(Thread):
                             self.cache_file_list()
                 except Exception as e:
                     self.logger.exception(e)
-                    # Stop ongoing recording gracefully (same as pause button) so stream/file is closed properly
-                    if self.recording and self.stopDownload:
-                        self.log("Stopping recording due to exception...")
-                        self.stopDownload()
+                    self._stop_recording_gracefully("exception")
                     self.recording = False
                     try:
                         self.cache_file_list()
