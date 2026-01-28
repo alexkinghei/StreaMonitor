@@ -70,8 +70,9 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                         if CONTAINER == 'mp4':
                             output_str += ' -movflags +faststart'
                         
-                        # 使用错误恢复选项来处理可能损坏的文件
-                        input_options = '-err_detect ignore_err'
+                        # 明确指定输入格式为 mpegts（TS 格式），避免 FFmpeg 误识别
+                        # 对于可能损坏的文件，添加错误恢复选项
+                        input_options = '-f mpegts -err_detect ignore_err'
                         ff = FFmpeg(executable=FFMPEG_PATH, inputs={ts_file_path: input_options}, outputs={final_filename: output_str})
                         ff.run(stdout=stdout, stderr=stderr_file)
                         
@@ -216,8 +217,9 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                     if CONTAINER == 'mp4':
                         output_str += ' -movflags +faststart'
                     
-                    # 使用错误恢复选项来处理可能损坏的文件
-                    input_options = '-err_detect ignore_err'
+                    # 明确指定输入格式为 mpegts（TS 格式），避免 FFmpeg 误识别
+                    # 对于可能损坏的文件，添加错误恢复选项
+                    input_options = '-f mpegts -err_detect ignore_err'
                     ff = FFmpeg(executable=FFMPEG_PATH, inputs={current_file: input_options}, outputs={final_filename: output_str})
                     ff.run(stdout=stdout, stderr=stderr_file)
                     

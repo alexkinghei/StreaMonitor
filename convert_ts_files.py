@@ -44,8 +44,9 @@ def convert_ts_to_mp4(ts_file_path, final_filename):
         if CONTAINER == 'mp4':
             output_str += ' -movflags +faststart'
         
-        # 使用错误恢复选项来处理可能损坏的文件
-        input_options = '-err_detect ignore_err'
+        # 明确指定输入格式为 mpegts（TS 格式），避免 FFmpeg 误识别
+        # 对于可能损坏的文件，添加错误恢复选项
+        input_options = '-f mpegts -err_detect ignore_err'
         
         ff = FFmpeg(
             executable=FFMPEG_PATH,
