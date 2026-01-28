@@ -16,36 +16,48 @@ from parameters import DOWNLOADS_DIR, CONTAINER, FFMPEG_PATH, DEBUG
 
 def convert_ts_to_mp4(ts_file_path, final_filename):
     """转换 .ts 文件到最终格式"""
+    stderr_log_path = None
     try:
         # 检查文件是否存在且不为空
         if not os.path.exists(ts_file_path):
             return False, "文件不存在"
         
-        if os.path.getsize(ts_file_path) == 0:
+        file_size = os.path.getsize(ts_file_path)
+        if file_size == 0:
             os.remove(ts_file_path)
             return False, "文件为空，已删除"
         
         # 如果目标文件已存在，跳过
         if os.path.exists(final_filename):
-            print(f"  目标文件已存在，跳过: {final_filename}")
+            print(f"  目标文件已存在，跳过: {os.path.basename(final_filename)}")
             os.remove(ts_file_path)
             return True, "目标文件已存在"
         
         print(f"  正在转换: {os.path.basename(ts_file_path)} -> {os.path.basename(final_filename)}")
         
+        stderr_log_path = final_filename + '.postprocess_stderr.log'
         stdout = open(final_filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
-        stderr = open(final_filename + '.postprocess_stderr.log', 'w+') if DEBUG else subprocess.DEVNULL
+        stderr = open(stderr_log_path, 'w+') if DEBUG else subprocess.DEVNULL
         
         output_str = '-c:a copy -c:v copy'
         if CONTAINER == 'mp4':
             output_str += ' -movflags +faststart'
         
+        # 使用错误恢复选项来处理可能损坏的文件
+        input_options = '-err_detect ignore_err'
+        
         ff = FFmpeg(
             executable=FFMPEG_PATH,
-            inputs={ts_file_path: None},
+            inputs={ts_file_path: input_options},
             outputs={final_filename: output_str}
         )
         ff.run(stdout=stdout, stderr=stderr)
+        
+        # 检查输出文件是否成功创建
+        if not os.path.exists(final_filename) or os.path.getsize(final_filename) == 0:
+            error_msg = "转换产生的文件为空或不存在"
+            print(f"  ✗ {error_msg}")
+            return False, error_msg
         
         # 转换成功后删除 .ts 文件
         os.remove(ts_file_path)
@@ -53,11 +65,27 @@ def convert_ts_to_mp4(ts_file_path, final_filename):
         return True, "转换成功"
         
     except FFRuntimeError as e:
-        if e.exit_code and e.exit_code != 255:
-            error_msg = f"FFmpeg 错误 (退出码 {e.exit_code}): {e}"
-            print(f"  ✗ {error_msg}")
-            return False, error_msg
-        return False, "FFmpeg 错误"
+        # 读取 stderr 日志以获取详细错误信息
+        error_details = ""
+        if stderr_log_path and os.path.exists(stderr_log_path):
+            try:
+                with open(stderr_log_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    stderr_content = f.read()
+                    if stderr_content:
+                        lines = stderr_content.strip().split('\n')
+                        error_details = '\n'.join(lines[-5:]) if len(lines) > 5 else stderr_content
+            except Exception:
+                pass
+        
+        error_msg = f"FFmpeg 错误"
+        if e.exit_code:
+            error_msg += f" (退出码 {e.exit_code})"
+        if error_details:
+            error_msg += f": {error_details}"
+        else:
+            error_msg += f": {e}"
+        print(f"  ✗ {error_msg}")
+        return False, error_msg
     except Exception as e:
         error_msg = f"意外错误: {e}"
         print(f"  ✗ {error_msg}")

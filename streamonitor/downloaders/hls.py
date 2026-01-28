@@ -50,6 +50,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
         def convert_segment_to_mp4(ts_file_path, final_filename):
             """Convert a .ts segment file to final format (MP4) in background thread"""
             def convert():
+                stderr_log_path = None
                 try:
                     # Wait a bit to ensure file is fully written and closed
                     sleep(0.5)
@@ -60,20 +61,49 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                         os.remove(ts_file_path)
                         return
                     
+                    stderr_log_path = final_filename + '.postprocess_stderr.log'
                     stdout = open(final_filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
-                    stderr = open(final_filename + '.postprocess_stderr.log', 'w+') if DEBUG else subprocess.DEVNULL
+                    stderr = open(stderr_log_path, 'w+') if DEBUG else subprocess.DEVNULL
                     output_str = '-c:a copy -c:v copy'
                     if CONTAINER == 'mp4':
                         output_str += ' -movflags +faststart'
-                    ff = FFmpeg(executable=FFMPEG_PATH, inputs={ts_file_path: None}, outputs={final_filename: output_str})
+                    
+                    # 使用错误恢复选项来处理可能损坏的文件
+                    input_options = '-err_detect ignore_err'
+                    ff = FFmpeg(executable=FFMPEG_PATH, inputs={ts_file_path: input_options}, outputs={final_filename: output_str})
                     ff.run(stdout=stdout, stderr=stderr)
+                    
+                    # 检查输出文件是否成功创建
+                    if not os.path.exists(final_filename) or os.path.getsize(final_filename) == 0:
+                        self.logger.warning(f'Conversion produced empty or missing file: {final_filename}')
+                        return
+                    
                     os.remove(ts_file_path)
                 except FFRuntimeError as e:
+                    # 读取 stderr 日志以获取详细错误信息
+                    error_details = ""
+                    if stderr_log_path and os.path.exists(stderr_log_path):
+                        try:
+                            with open(stderr_log_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                stderr_content = f.read()
+                                if stderr_content:
+                                    lines = stderr_content.strip().split('\n')
+                                    error_details = '\n'.join(lines[-5:]) if len(lines) > 5 else stderr_content
+                        except Exception:
+                            pass
+                    
                     if e.exit_code and e.exit_code != 255:
-                        self.logger.error(f'Error converting segment {ts_file_path}: {e}')
+                        error_msg = f'Error converting segment {os.path.basename(ts_file_path)}'
+                        if e.exit_code:
+                            error_msg += f' (exit code: {e.exit_code})'
+                        if error_details:
+                            error_msg += f'\nFFmpeg error: {error_details}'
+                        else:
+                            error_msg += f': {e}'
+                        self.logger.error(error_msg)
                         # Keep the .ts file if conversion fails so it can be retried later
                 except Exception as e:
-                    self.logger.error(f'Unexpected error converting segment {ts_file_path}: {e}')
+                    self.logger.error(f'Unexpected error converting segment {os.path.basename(ts_file_path)}: {e}')
                     # Keep the .ts file if conversion fails so it can be retried later
             
             # Run conversion in background thread (like pause/resume does)
@@ -165,21 +195,49 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
         # Convert the last segment that might still be in .ts format
         if current_file and os.path.exists(current_file) and os.path.getsize(current_file) > 0:
             final_filename = current_file.replace('.ts', '.' + CONTAINER)
+            stderr_log_path = final_filename + '.postprocess_stderr.log'
             try:
                 stdout = open(final_filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
-                stderr = open(final_filename + '.postprocess_stderr.log', 'w+') if DEBUG else subprocess.DEVNULL
+                stderr = open(stderr_log_path, 'w+') if DEBUG else subprocess.DEVNULL
                 output_str = '-c:a copy -c:v copy'
                 if CONTAINER == 'mp4':
                     output_str += ' -movflags +faststart'
-                ff = FFmpeg(executable=FFMPEG_PATH, inputs={current_file: None}, outputs={final_filename: output_str})
+                
+                # 使用错误恢复选项来处理可能损坏的文件
+                input_options = '-err_detect ignore_err'
+                ff = FFmpeg(executable=FFMPEG_PATH, inputs={current_file: input_options}, outputs={final_filename: output_str})
                 ff.run(stdout=stdout, stderr=stderr)
-                os.remove(current_file)
+                
+                # 检查输出文件是否成功创建
+                if not os.path.exists(final_filename) or os.path.getsize(final_filename) == 0:
+                    self.logger.warning(f'Conversion produced empty or missing file: {final_filename}')
+                else:
+                    os.remove(current_file)
             except FFRuntimeError as e:
+                # 读取 stderr 日志以获取详细错误信息
+                error_details = ""
+                if stderr_log_path and os.path.exists(stderr_log_path):
+                    try:
+                        with open(stderr_log_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            stderr_content = f.read()
+                            if stderr_content:
+                                lines = stderr_content.strip().split('\n')
+                                error_details = '\n'.join(lines[-5:]) if len(lines) > 5 else stderr_content
+                    except Exception:
+                        pass
+                
                 if e.exit_code and e.exit_code != 255:
-                    self.logger.error(f'Error converting final segment: {e}')
+                    error_msg = f'Error converting final segment {os.path.basename(current_file)}'
+                    if e.exit_code:
+                        error_msg += f' (exit code: {e.exit_code})'
+                    if error_details:
+                        error_msg += f'\nFFmpeg error: {error_details}'
+                    else:
+                        error_msg += f': {e}'
+                    self.logger.error(error_msg)
                     # Keep the .ts file if conversion fails so it can be retried later
             except Exception as e:
-                self.logger.error(f'Unexpected error converting final segment: {e}')
+                self.logger.error(f'Unexpected error converting final segment {os.path.basename(current_file)}: {e}')
                 # Keep the .ts file if conversion fails so it can be retried later
         
         # Wait for all conversion threads to complete (with timeout)
