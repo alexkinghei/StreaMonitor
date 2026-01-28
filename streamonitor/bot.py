@@ -29,9 +29,9 @@ class Bot(Thread):
 
     sleep_on_private = 5
     sleep_on_offline = 5
-    sleep_on_long_offline = 300
-    sleep_on_error = 20
-    sleep_on_ratelimit = 180
+    sleep_on_long_offline = 100
+    sleep_on_error = 10
+    sleep_on_ratelimit = 90
     long_offline_timeout = 600
 
     headers = {
