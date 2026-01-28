@@ -172,18 +172,20 @@ class StripChat(RoomIdBot):
         if hasattr(self, 'lastInfo') and self.lastInfo:
             topic = self.lastInfo.get('topic')
         
-        # Clean topic for filename (remove invalid characters)
+        # Clean topic for filename (remove invalid / problematic characters)
         if topic:
             # Remove or replace characters that are invalid in filenames
             # Windows: < > : " / \ | ? *
             # Unix: / (forward slash)
-            invalid_chars = r'[<>:"/\\|?*\x00-\x1f]'
+            # Also ! can cause shell/history issues and ffmpeg exit 183 in some environments
+            invalid_chars = r'[<>:"/\\|?*!\x00-\x1f]'
             topic = re.sub(invalid_chars, '_', str(topic))
-            # Remove leading/trailing spaces and dots, and limit length
-            topic = topic.strip(' .')
-            # Limit topic length to avoid very long filenames
-            if len(topic) > 50:
-                topic = topic[:50]
+            # Remove leading/trailing spaces and dots
+            topic = topic.strip(' ._')
+            # Limit topic by UTF-8 byte length (80 bytes) so filename stays safe and avoids ffmpeg/path issues
+            topic_utf8 = topic.encode('utf-8')
+            if len(topic_utf8) > 80:
+                topic = topic_utf8[:80].decode('utf-8', errors='ignore').strip(' ._')
             # If topic is empty after cleaning, set to None
             if not topic:
                 topic = None
