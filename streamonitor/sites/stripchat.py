@@ -245,10 +245,18 @@ class StripChat(RoomIdBot):
         return ''.join(random.choice(chars) for _ in range(length))
 
     def _getStatusData(self, username):
-        r = self.session.get(
-            f'https://stripchat.com/api/front/v2/models/username/{username}/cam?uniq={StripChat.uniq()}',
-            headers=self.headers
-        )
+        try:
+            r = self.session.get(
+                f'https://stripchat.com/api/front/v2/models/username/{username}/cam?uniq={StripChat.uniq()}',
+                headers=self.headers,
+                timeout=15
+            )
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            self.logger.warning('StripChat API unreachable (DNS/network): %s', e)
+            return None
+        except requests.exceptions.RequestException as e:
+            self.logger.warning('StripChat API request failed: %s', e)
+            return None
 
         try:
             data = r.json()
