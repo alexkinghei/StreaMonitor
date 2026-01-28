@@ -28,37 +28,49 @@ def convert_ts_file(ts_file_path, final_filename, logger=None):
             return True
         
         # 创建日志文件路径
+        # 即使 DEBUG=False，也创建 stderr 日志文件用于错误诊断
         stderr_log_path = final_filename + '.postprocess_stderr.log'
         stdout_log_path = final_filename + '.postprocess_stdout.log'
         
         stdout = open(stdout_log_path, 'w+') if DEBUG else subprocess.DEVNULL
-        stderr = open(stderr_log_path, 'w+') if DEBUG else subprocess.DEVNULL
+        # 总是捕获 stderr 以便诊断错误
+        stderr_file = open(stderr_log_path, 'w+')
         
-        output_str = '-c:a copy -c:v copy'
-        if CONTAINER == 'mp4':
-            output_str += ' -movflags +faststart'
-        
-        # 对于可能损坏的文件，添加错误恢复选项
-        # 使用 -err_detect ignore_err 来忽略一些错误并继续处理
-        input_options = '-err_detect ignore_err'
-        
-        ff = FFmpeg(
-            executable=FFMPEG_PATH,
-            inputs={ts_file_path: input_options},
-            outputs={final_filename: output_str}
-        )
-        ff.run(stdout=stdout, stderr=stderr)
-        
-        # 检查输出文件是否成功创建
-        if not os.path.exists(final_filename) or os.path.getsize(final_filename) == 0:
+        try:
+            output_str = '-c:a copy -c:v copy'
+            if CONTAINER == 'mp4':
+                output_str += ' -movflags +faststart'
+            
+            # 对于可能损坏的文件，添加错误恢复选项
+            # 使用 -err_detect ignore_err 来忽略一些错误并继续处理
+            input_options = '-err_detect ignore_err'
+            
+            ff = FFmpeg(
+                executable=FFMPEG_PATH,
+                inputs={ts_file_path: input_options},
+                outputs={final_filename: output_str}
+            )
+            ff.run(stdout=stdout, stderr=stderr_file)
+            
+            # 关闭 stderr 文件以便后续读取
+            stderr_file.close()
+            stderr_file = None
+            
+            # 检查输出文件是否成功创建
+            if not os.path.exists(final_filename) or os.path.getsize(final_filename) == 0:
+                if logger:
+                    logger.warning(f'Conversion produced empty or missing file: {final_filename}')
+                return False
+            
+            os.remove(ts_file_path)
             if logger:
-                logger.warning(f'Conversion produced empty or missing file: {final_filename}')
-            return False
-        
-        os.remove(ts_file_path)
-        if logger:
-            logger.debug(f'Converted legacy .ts file: {os.path.basename(ts_file_path)} -> {os.path.basename(final_filename)}')
-        return True
+                logger.debug(f'Converted legacy .ts file: {os.path.basename(ts_file_path)} -> {os.path.basename(final_filename)}')
+            return True
+        finally:
+            if stderr_file:
+                stderr_file.close()
+            if stdout != subprocess.DEVNULL:
+                stdout.close()
         
     except FFRuntimeError as e:
         # 读取 stderr 日志以获取详细错误信息

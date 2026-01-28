@@ -63,22 +63,33 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                     
                     stderr_log_path = final_filename + '.postprocess_stderr.log'
                     stdout = open(final_filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
-                    stderr = open(stderr_log_path, 'w+') if DEBUG else subprocess.DEVNULL
-                    output_str = '-c:a copy -c:v copy'
-                    if CONTAINER == 'mp4':
-                        output_str += ' -movflags +faststart'
-                    
-                    # 使用错误恢复选项来处理可能损坏的文件
-                    input_options = '-err_detect ignore_err'
-                    ff = FFmpeg(executable=FFMPEG_PATH, inputs={ts_file_path: input_options}, outputs={final_filename: output_str})
-                    ff.run(stdout=stdout, stderr=stderr)
-                    
-                    # 检查输出文件是否成功创建
-                    if not os.path.exists(final_filename) or os.path.getsize(final_filename) == 0:
-                        self.logger.warning(f'Conversion produced empty or missing file: {final_filename}')
-                        return
-                    
-                    os.remove(ts_file_path)
+                    # 总是捕获 stderr 以便诊断错误
+                    stderr_file = open(stderr_log_path, 'w+')
+                    try:
+                        output_str = '-c:a copy -c:v copy'
+                        if CONTAINER == 'mp4':
+                            output_str += ' -movflags +faststart'
+                        
+                        # 使用错误恢复选项来处理可能损坏的文件
+                        input_options = '-err_detect ignore_err'
+                        ff = FFmpeg(executable=FFMPEG_PATH, inputs={ts_file_path: input_options}, outputs={final_filename: output_str})
+                        ff.run(stdout=stdout, stderr=stderr_file)
+                        
+                        # 关闭 stderr 文件以便后续读取
+                        stderr_file.close()
+                        stderr_file = None
+                        
+                        # 检查输出文件是否成功创建
+                        if not os.path.exists(final_filename) or os.path.getsize(final_filename) == 0:
+                            self.logger.warning(f'Conversion produced empty or missing file: {final_filename}')
+                            return
+                        
+                        os.remove(ts_file_path)
+                    finally:
+                        if stderr_file:
+                            stderr_file.close()
+                        if stdout != subprocess.DEVNULL:
+                            stdout.close()
                 except FFRuntimeError as e:
                     # 读取 stderr 日志以获取详细错误信息
                     error_details = ""
@@ -198,21 +209,32 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
             stderr_log_path = final_filename + '.postprocess_stderr.log'
             try:
                 stdout = open(final_filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
-                stderr = open(stderr_log_path, 'w+') if DEBUG else subprocess.DEVNULL
-                output_str = '-c:a copy -c:v copy'
-                if CONTAINER == 'mp4':
-                    output_str += ' -movflags +faststart'
-                
-                # 使用错误恢复选项来处理可能损坏的文件
-                input_options = '-err_detect ignore_err'
-                ff = FFmpeg(executable=FFMPEG_PATH, inputs={current_file: input_options}, outputs={final_filename: output_str})
-                ff.run(stdout=stdout, stderr=stderr)
-                
-                # 检查输出文件是否成功创建
-                if not os.path.exists(final_filename) or os.path.getsize(final_filename) == 0:
-                    self.logger.warning(f'Conversion produced empty or missing file: {final_filename}')
-                else:
-                    os.remove(current_file)
+                # 总是捕获 stderr 以便诊断错误
+                stderr_file = open(stderr_log_path, 'w+')
+                try:
+                    output_str = '-c:a copy -c:v copy'
+                    if CONTAINER == 'mp4':
+                        output_str += ' -movflags +faststart'
+                    
+                    # 使用错误恢复选项来处理可能损坏的文件
+                    input_options = '-err_detect ignore_err'
+                    ff = FFmpeg(executable=FFMPEG_PATH, inputs={current_file: input_options}, outputs={final_filename: output_str})
+                    ff.run(stdout=stdout, stderr=stderr_file)
+                    
+                    # 关闭 stderr 文件以便后续读取
+                    stderr_file.close()
+                    stderr_file = None
+                    
+                    # 检查输出文件是否成功创建
+                    if not os.path.exists(final_filename) or os.path.getsize(final_filename) == 0:
+                        self.logger.warning(f'Conversion produced empty or missing file: {final_filename}')
+                    else:
+                        os.remove(current_file)
+                finally:
+                    if stderr_file:
+                        stderr_file.close()
+                    if stdout != subprocess.DEVNULL:
+                        stdout.close()
             except FFRuntimeError as e:
                 # 读取 stderr 日志以获取详细错误信息
                 error_details = ""

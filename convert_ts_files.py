@@ -37,7 +37,8 @@ def convert_ts_to_mp4(ts_file_path, final_filename):
         
         stderr_log_path = final_filename + '.postprocess_stderr.log'
         stdout = open(final_filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
-        stderr = open(stderr_log_path, 'w+') if DEBUG else subprocess.DEVNULL
+        # 总是捕获 stderr 以便诊断错误
+        stderr = open(stderr_log_path, 'w+')
         
         output_str = '-c:a copy -c:v copy'
         if CONTAINER == 'mp4':
