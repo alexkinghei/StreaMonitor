@@ -149,7 +149,7 @@ class HTTPManager(Manager):
                     if mtime > cutoff:
                         skipped.append(rel_path)
                         continue
-                    mp4_path = full_path[:-3] + CONTAINER
+                    mp4_path = os.path.splitext(full_path)[0] + '.' + CONTAINER
                     self.logger.info(f"[cleanup-ts] Converting: {rel_path} -> .{CONTAINER}")
                     sys.stdout.flush()
                     sys.stderr.flush()
