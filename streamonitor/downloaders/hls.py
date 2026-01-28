@@ -164,15 +164,12 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
     process.join()
     self.stopDownload = None
 
-    if error:
-        return False
-
-    # Post-processing: convert the last segment file to final format (if still exists)
+    # Post-processing for segment mode: always convert/clean last .ts (even on error) so we don't leave .ts files
     if segment_during_download:
         # Wait a bit to ensure the last file is fully closed
         sleep(0.5)
         
-        # Convert the last segment that might still be in .ts format
+        # Convert the last segment that might still be in .ts format (success or error path)
         if current_file and os.path.exists(current_file) and os.path.getsize(current_file) > 0:
             final_filename = current_file.replace('.ts', '.' + CONTAINER)
             try:
@@ -190,8 +187,12 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
             except Exception as e:
                 self.logger.error(f'Unexpected error converting final segment: {e}')
         
+        if error:
+            return False
         # Check if at least one segment was created
         return current_file is not None
+    elif error:
+        return False
     else:
         # Original behavior: single file post-processing
         if not os.path.exists(tmpfilename):
