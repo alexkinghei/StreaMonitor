@@ -35,6 +35,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
     current_file = None
     current_file_size = 0
     segment_files = []  # Track all segment files for final conversion
+    conversion_threads = []  # Track all conversion threads to wait for completion
     
     if segment_during_download:
         # Use the initial filename for first segment (but as .ts)
@@ -42,7 +43,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
         current_file_size = 0
 
     def execute():
-        nonlocal error, current_file, current_file_size, segment_files
+        nonlocal error, current_file, current_file_size, segment_files, conversion_threads
         downloaded_list = []
         outfile = [None]  # Use list to allow modification in nested function
         
@@ -69,13 +70,16 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                     os.remove(ts_file_path)
                 except FFRuntimeError as e:
                     if e.exit_code and e.exit_code != 255:
-                        self.logger.error(f'Error converting segment: {e}')
+                        self.logger.error(f'Error converting segment {ts_file_path}: {e}')
+                        # Keep the .ts file if conversion fails so it can be retried later
                 except Exception as e:
-                    self.logger.error(f'Unexpected error converting segment: {e}')
+                    self.logger.error(f'Unexpected error converting segment {ts_file_path}: {e}')
+                    # Keep the .ts file if conversion fails so it can be retried later
             
             # Run conversion in background thread (like pause/resume does)
-            convert_thread = Thread(target=convert)
+            convert_thread = Thread(target=convert, daemon=False)  # Non-daemon so it completes even if main thread exits
             convert_thread.start()
+            conversion_threads.append(convert_thread)  # Track the thread
             return convert_thread
         
         def get_output_file():
@@ -173,8 +177,27 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
             except FFRuntimeError as e:
                 if e.exit_code and e.exit_code != 255:
                     self.logger.error(f'Error converting final segment: {e}')
+                    # Keep the .ts file if conversion fails so it can be retried later
             except Exception as e:
                 self.logger.error(f'Unexpected error converting final segment: {e}')
+                # Keep the .ts file if conversion fails so it can be retried later
+        
+        # Wait for all conversion threads to complete (with timeout)
+        # This ensures .ts files are converted before the function returns
+        import time
+        max_wait_time = 300  # Maximum 5 minutes to wait for conversions
+        start_time = time.time()
+        remaining_threads = [t for t in conversion_threads if t.is_alive()]
+        
+        while remaining_threads and (time.time() - start_time) < max_wait_time:
+            sleep(1)
+            remaining_threads = [t for t in conversion_threads if t.is_alive()]
+            if remaining_threads:
+                self.logger.debug(f'Waiting for {len(remaining_threads)} conversion thread(s) to complete...')
+        
+        if remaining_threads:
+            self.logger.warning(f'{len(remaining_threads)} conversion thread(s) did not complete in time. '
+                              f'Some .ts files may remain and can be converted later using convert_ts_files.py')
         
         # Check if at least one segment was created
         return current_file is not None
