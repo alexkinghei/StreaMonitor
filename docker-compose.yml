@@ -8,7 +8,7 @@ services:
 
     restart: unless-stopped
     # Give time for graceful shutdown: stop all recordings (flush/close files) before container is killed
-    stop_grace_period: 180s
+    stop_grace_period: 300s
     environment:
       # set timzeone
       #TZ: Etc/UTC
