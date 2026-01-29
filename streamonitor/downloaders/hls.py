@@ -85,10 +85,15 @@ def _rename_mp4_by_title(mp4_path, logger=None):
 def getVideoNativeHLS(self, url, filename, m3u_processor=None):
     self.stopDownloadFlag = False
     error = False
-    tmpfilename = filename[:-len('.' + CONTAINER)] + '.tmp.ts'
+    base_no_ext = filename[:-len('.' + CONTAINER)]
+    tmp_ts = base_no_ext + '.tmp.ts'
+    tmp_mp4 = base_no_ext + '.tmp.' + CONTAINER
+    tmpfilename = None
     session = requests.Session()
     # Mutable so we can refresh playlist URL when stream changes bitrate/variants
     url_ref = [url]
+    # Detect fMP4 HLS (EXT-X-MAP) vs TS HLS; fMP4 should be written as .mp4 directly (no ffmpeg remux from .ts)
+    is_fmp4 = [None]
 
     # Check if we should segment during download
     segment_size_bytes = parse_segment_size(SEGMENT_SIZE)
@@ -97,13 +102,8 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
     current_file_size = 0
     segment_files = []  # Track all segment files for final conversion
 
-    if segment_during_download:
-        # Use the initial filename for first segment (but as .ts)
-        current_file = filename[:-len('.' + CONTAINER)] + '.ts'
-        current_file_size = 0
-
     def execute():
-        nonlocal error, current_file, current_file_size, segment_files
+        nonlocal error, current_file, current_file_size, segment_files, tmpfilename
         downloaded_list = []
         outfile = [None]  # Use list to allow modification in nested function
         last_success = time.monotonic()
@@ -161,36 +161,53 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
         def get_output_file():
             nonlocal current_file, current_file_size, segment_files
             if segment_during_download:
+                # Lazy-init current file once we know stream type
+                if current_file is None:
+                    if is_fmp4[0]:
+                        current_file = filename  # write fMP4 directly to final mp4 path
+                    else:
+                        current_file = base_no_ext + '.ts'
+                    current_file_size = 0
                 # Check if we need to start a new segment
                 if current_file_size >= int(segment_size_bytes):
                     if outfile[0] and not outfile[0].closed:
                         outfile[0].flush()
                         outfile[0].close()
                     
-                    # Convert the completed segment to MP4 (like pause/resume logic)
-                    prev_ts_file = current_file
-                    # Generate final filename by replacing .ts with .mp4
-                    prev_final_filename = prev_ts_file.replace('.ts', '.' + CONTAINER)
-                    if os.path.exists(prev_ts_file):
-                        prev_sz = os.path.getsize(prev_ts_file)
-                        if prev_sz >= MIN_SEGMENT_SIZE:
-                            segment_files.append((prev_ts_file, prev_final_filename))
-                            convert_segment_to_mp4(prev_ts_file, prev_final_filename)
-                        elif prev_sz > 0:
-                            try:
-                                os.remove(prev_ts_file)
-                            except OSError:
-                                pass
+                    # Finalize previous segment
+                    prev_file = current_file
+                    if is_fmp4[0]:
+                        # fMP4 already written as mp4; just rename by title and continue
+                        _rename_mp4_by_title(prev_file, self.logger)
+                    else:
+                        # TS -> MP4 conversion (like pause/resume logic)
+                        prev_ts_file = prev_file
+                        prev_final_filename = prev_ts_file.replace('.ts', '.' + CONTAINER)
+                        if os.path.exists(prev_ts_file):
+                            prev_sz = os.path.getsize(prev_ts_file)
+                            if prev_sz >= MIN_SEGMENT_SIZE:
+                                segment_files.append((prev_ts_file, prev_final_filename))
+                                convert_segment_to_mp4(prev_ts_file, prev_final_filename)
+                            elif prev_sz > 0:
+                                try:
+                                    os.remove(prev_ts_file)
+                                except OSError:
+                                    pass
                     
                     # Generate new filename with timestamp (like pause/resume)
                     new_filename = self.genOutFilename(create_dir=True)
-                    current_file = new_filename[:-len('.' + CONTAINER)] + '.ts'
+                    if is_fmp4[0]:
+                        current_file = new_filename  # mp4
+                    else:
+                        current_file = new_filename[:-len('.' + CONTAINER)] + '.ts'
                     current_file_size = 0
                 if outfile[0] is None or outfile[0].closed:
                     outfile[0] = open(current_file, 'ab')
                 return outfile[0]
             else:
                 if outfile[0] is None:
+                    if tmpfilename is None:
+                        tmpfilename = tmp_mp4 if is_fmp4[0] else tmp_ts
                     outfile[0] = open(tmpfilename, 'wb')
                 return outfile[0]
         
@@ -214,6 +231,9 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                 if m3u_processor:
                     content = m3u_processor(content)
                 chunklist = m3u8.loads(content)
+                if is_fmp4[0] is None:
+                    # EXT-X-MAP indicates fMP4 segments (init segment + fragments)
+                    is_fmp4[0] = len(getattr(chunklist, 'segment_map', []) or []) > 0
                 if len(chunklist.segments) == 0:
                     # Sometimes live playlists temporarily return empty; tolerate within grace.
                     if within_grace():
@@ -284,43 +304,48 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
         # Wait a bit to ensure the last file is fully closed
         sleep(0.5)
         
-        # Convert the last segment that might still be in .ts format (success or error path)
+        # Finalize the last segment (success or error path)
         if current_file and os.path.exists(current_file):
             last_sz = os.path.getsize(current_file)
             if last_sz >= MIN_SEGMENT_SIZE:
-                final_filename = current_file.replace('.ts', '.' + CONTAINER)
-                stderr_path = final_filename + '.postprocess_stderr.log'
-                stderr_file = None
-                try:
-                    # Always write stderr log so it can be inspected when conversion fails (e.g. exit 254)
-                    stdout = open(final_filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
-                    stderr_file = open(stderr_path, 'w+')
-                    output_str = '-c:a copy -c:v copy'
-                    ff = FFmpeg(executable=FFMPEG_PATH, inputs={current_file: None}, outputs={final_filename: output_str})
-                    ff.run(stdout=stdout, stderr=stderr_file)
-                    stderr_file.close()
+                if is_fmp4[0]:
+                    # fMP4: already mp4 on disk, just rename by title
+                    _rename_mp4_by_title(current_file, self.logger)
+                else:
+                    # TS -> MP4
+                    final_filename = current_file.replace('.ts', '.' + CONTAINER)
+                    stderr_path = final_filename + '.postprocess_stderr.log'
                     stderr_file = None
                     try:
-                        os.remove(stderr_path)
-                    except OSError:
-                        pass
-                    os.remove(current_file)
-                    _rename_mp4_by_title(final_filename, self.logger)
-                except FFRuntimeError as e:
-                    if stderr_file:
+                        # Always write stderr log so it can be inspected when conversion fails (e.g. exit 254)
+                        stdout = open(final_filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
+                        stderr_file = open(stderr_path, 'w+')
+                        output_str = '-c:a copy -c:v copy'
+                        ff = FFmpeg(executable=FFMPEG_PATH, inputs={current_file: None}, outputs={final_filename: output_str})
+                        ff.run(stdout=stdout, stderr=stderr_file)
+                        stderr_file.close()
+                        stderr_file = None
                         try:
-                            stderr_file.close()
+                            os.remove(stderr_path)
                         except OSError:
                             pass
-                    if e.exit_code and e.exit_code != 255:
-                        self.logger.error(f'Error converting final segment: {e}. Check {stderr_path!r} for ffmpeg stderr.')
-                except Exception as e:
-                    if stderr_file:
-                        try:
-                            stderr_file.close()
-                        except OSError:
-                            pass
-                    self.logger.error(f'Unexpected error converting final segment: {e}. Check {stderr_path!r} for ffmpeg stderr.')
+                        os.remove(current_file)
+                        _rename_mp4_by_title(final_filename, self.logger)
+                    except FFRuntimeError as e:
+                        if stderr_file:
+                            try:
+                                stderr_file.close()
+                            except OSError:
+                                pass
+                        if e.exit_code and e.exit_code != 255:
+                            self.logger.error(f'Error converting final segment: {e}. Check {stderr_path!r} for ffmpeg stderr.')
+                    except Exception as e:
+                        if stderr_file:
+                            try:
+                                stderr_file.close()
+                            except OSError:
+                                pass
+                        self.logger.error(f'Unexpected error converting final segment: {e}. Check {stderr_path!r} for ffmpeg stderr.')
             else:
                 try:
                     os.remove(current_file)
@@ -335,6 +360,8 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
         return False
     else:
         # Original behavior: single file post-processing
+        if tmpfilename is None:
+            tmpfilename = tmp_mp4 if is_fmp4[0] else tmp_ts
         if not os.path.exists(tmpfilename):
             return False
 
@@ -342,16 +369,24 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
             os.remove(tmpfilename)
             return False
 
-        try:
-            stdout = open(filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
-            stderr = open(filename + '.postprocess_stderr.log', 'w+') if DEBUG else subprocess.DEVNULL
-            output_str = '-c:a copy -c:v copy'
-            ff = FFmpeg(executable=FFMPEG_PATH, inputs={tmpfilename: None}, outputs={filename: output_str})
-            ff.run(stdout=stdout, stderr=stderr)
-            os.remove(tmpfilename)
-            _rename_mp4_by_title(filename, self.logger)
-        except FFRuntimeError as e:
-            if e.exit_code and e.exit_code != 255:
+        if is_fmp4[0]:
+            # fMP4: tmp file is already mp4; just move to final and rename by title
+            try:
+                os.rename(tmpfilename, filename)
+            except OSError:
                 return False
+            _rename_mp4_by_title(filename, self.logger)
+        else:
+            try:
+                stdout = open(filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
+                stderr = open(filename + '.postprocess_stderr.log', 'w+') if DEBUG else subprocess.DEVNULL
+                output_str = '-c:a copy -c:v copy'
+                ff = FFmpeg(executable=FFMPEG_PATH, inputs={tmpfilename: None}, outputs={filename: output_str})
+                ff.run(stdout=stdout, stderr=stderr)
+                os.remove(tmpfilename)
+                _rename_mp4_by_title(filename, self.logger)
+            except FFRuntimeError as e:
+                if e.exit_code and e.exit_code != 255:
+                    return False
 
     return True
