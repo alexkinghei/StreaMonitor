@@ -96,6 +96,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
     current_file = None
     current_file_size = 0
     segment_files = []  # Track all segment files for final conversion
+    segment_convert_threads = []  # Background conversion threads to join before return
 
     if segment_during_download:
         # Use the initial filename for first segment (but as .ts)
@@ -103,7 +104,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
         current_file_size = 0
 
     def execute():
-        nonlocal error, current_file, current_file_size, segment_files
+        nonlocal error, current_file, current_file_size, segment_files, segment_convert_threads
         downloaded_list = []
         outfile = [None]  # Use list to allow modification in nested function
         last_success = time.monotonic()
@@ -127,7 +128,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
             """Convert a .ts segment file to final format (MP4) in background thread"""
             def convert():
                 try:
-                    # Wait a bit to ensure file is fully written and closed
+                    # Wait a bit to ensure file is fully written and closed (fsync in main thread helps)
                     sleep(0.5)
                     
                     if not os.path.exists(ts_file_path):
@@ -148,10 +149,22 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                     os.remove(ts_file_path)
                     _rename_mp4_by_title(final_filename, self.logger)
                 except FFRuntimeError as e:
-                    if e.exit_code and e.exit_code != 255:
-                        self.logger.error(f'Error converting segment: {e}')
+                    # Log all non-zero exit codes (255 was previously ignored and caused silent failures)
+                    if e.exit_code:
+                        self.logger.error(f'Error converting segment (exit_code=%s): %s', e.exit_code, e)
+                    # Remove partial/corrupt mp4 if ffmpeg left one
+                    try:
+                        if os.path.exists(final_filename):
+                            os.remove(final_filename)
+                    except OSError:
+                        pass
                 except Exception as e:
                     self.logger.error(f'Unexpected error converting segment: {e}')
+                    try:
+                        if os.path.exists(final_filename):
+                            os.remove(final_filename)
+                    except OSError:
+                        pass
             
             # Run conversion in background thread (like pause/resume does)
             convert_thread = Thread(target=convert)
@@ -159,12 +172,16 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
             return convert_thread
         
         def get_output_file():
-            nonlocal current_file, current_file_size, segment_files
+            nonlocal current_file, current_file_size, segment_files, segment_convert_threads
             if segment_during_download:
                 # Check if we need to start a new segment
                 if current_file_size >= int(segment_size_bytes):
                     if outfile[0] and not outfile[0].closed:
                         outfile[0].flush()
+                        try:
+                            os.fsync(outfile[0].fileno())
+                        except (OSError, AttributeError):
+                            pass
                         outfile[0].close()
                     
                     # Convert the completed segment to MP4 (like pause/resume logic)
@@ -175,7 +192,9 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                         prev_sz = os.path.getsize(prev_ts_file)
                         if prev_sz >= MIN_SEGMENT_SIZE:
                             segment_files.append((prev_ts_file, prev_final_filename))
-                            convert_segment_to_mp4(prev_ts_file, prev_final_filename)
+                            t = convert_segment_to_mp4(prev_ts_file, prev_final_filename)
+                            if t is not None:
+                                segment_convert_threads.append(t)
                         elif prev_sz > 0:
                             try:
                                 os.remove(prev_ts_file)
@@ -266,6 +285,10 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
             if outfile[0] and not outfile[0].closed:
                 try:
                     outfile[0].flush()
+                    try:
+                        os.fsync(outfile[0].fileno())
+                    except (OSError, AttributeError):
+                        pass
                 except (OSError, ValueError):
                     pass
                 outfile[0].close()
@@ -281,6 +304,10 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
 
     # Post-processing for segment mode: always convert/clean last .ts (even on error) so we don't leave .ts files
     if segment_during_download:
+        # Wait for all background segment conversions to finish before converting last segment,
+        # so we avoid races (e.g. with convert_residual_ts_to_mp4) and return only when all conversions are done.
+        for t in segment_convert_threads:
+            t.join()
         # Wait a bit to ensure the last file is fully closed
         sleep(0.5)
         
@@ -312,8 +339,13 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                             stderr_file.close()
                         except OSError:
                             pass
-                    if e.exit_code and e.exit_code != 255:
-                        self.logger.error(f'Error converting final segment: {e}. Check {stderr_path!r} for ffmpeg stderr.')
+                    if e.exit_code:
+                        self.logger.error(f'Error converting final segment (exit_code=%s): %s. Check {stderr_path!r} for ffmpeg stderr.', e.exit_code, e)
+                    try:
+                        if os.path.exists(final_filename):
+                            os.remove(final_filename)
+                    except OSError:
+                        pass
                 except Exception as e:
                     if stderr_file:
                         try:
@@ -321,6 +353,11 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                         except OSError:
                             pass
                     self.logger.error(f'Unexpected error converting final segment: {e}. Check {stderr_path!r} for ffmpeg stderr.')
+                    try:
+                        if os.path.exists(final_filename):
+                            os.remove(final_filename)
+                    except OSError:
+                        pass
             else:
                 try:
                     os.remove(current_file)
