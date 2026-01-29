@@ -45,11 +45,11 @@ def _rename_mp4_by_title(mp4_path, logger=None):
             title = (f.read() or '').strip()
     except OSError:
         return
-    try:
-        os.remove(title_path)
-    except OSError:
-        pass
     if not title:
+        try:
+            os.remove(title_path)
+        except OSError:
+            pass
         return
     # Only replace filesystem-illegal chars for final filename
     illegal_fs = r'[<>:"/\\|?*\x00-\x1f]'
@@ -59,6 +59,10 @@ def _rename_mp4_by_title(mp4_path, logger=None):
     if len(safe_title.encode('utf-8')) > 80:
         safe_title = safe_title.encode('utf-8')[:80].decode('utf-8', errors='ignore').strip(' ._')
     if not safe_title:
+        try:
+            os.remove(title_path)
+        except OSError:
+            pass
         return
     final_path = os.path.join(folder, base + '-' + safe_title + '.' + CONTAINER)
     if final_path == mp4_path or not os.path.exists(mp4_path):
@@ -68,6 +72,13 @@ def _rename_mp4_by_title(mp4_path, logger=None):
     except OSError as e:
         if logger:
             logger.warning('Could not rename to title filename: %s', e)
+        return
+    # Delete .title.txt only after successful rename
+    try:
+        os.remove(title_path)
+    except OSError as e:
+        if logger:
+            logger.warning('Could not remove .title.txt after rename: %s', e)
 
 
 def getVideoNativeHLS(self, url, filename, m3u_processor=None):
