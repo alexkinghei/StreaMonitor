@@ -208,8 +208,10 @@ class Bot(Thread):
         skipped = 0
         # Also clean up old ffmpeg postprocess logs from previous failures.
         deleted_logs = 0
+        deleted_dot_log = 0
+        deleted_title_txt = 0
         # Additional safety to avoid racing with very recent writes or late close.
-        # Any .ts modified within this window will be skipped.
+        # Any .ts / .log / .title.txt modified within this window will be skipped.
         recent_write_grace_seconds = 120
 
         def unique_mp4_path(base_mp4_path: str) -> str:
@@ -232,6 +234,24 @@ class Bot(Thread):
                 try:
                     os.remove(entry.path)
                     deleted_logs += 1
+                except OSError:
+                    pass
+
+        # Pass 1b: delete .log and .title.txt older than grace period (avoid deleting active recording files)
+        for entry in os.scandir(folder):
+            if not entry.is_file():
+                continue
+            name_lower = entry.name.lower()
+            if name_lower.endswith(".log") or name_lower.endswith(".title.txt"):
+                try:
+                    st = entry.stat()
+                    if (time.time() - st.st_mtime) < recent_write_grace_seconds:
+                        continue
+                    os.remove(entry.path)
+                    if name_lower.endswith(".log"):
+                        deleted_dot_log += 1
+                    else:
+                        deleted_title_txt += 1
                 except OSError:
                     pass
 
@@ -305,9 +325,9 @@ class Bot(Thread):
         except Exception:
             pass
 
-        if converted == 0 and deleted == 0 and skipped == 0:
+        if converted == 0 and deleted == 0 and skipped == 0 and deleted_logs == 0 and deleted_dot_log == 0 and deleted_title_txt == 0:
             return "No ts files"
-        return f"OK (converted={converted}, deleted={deleted}, skipped={skipped}, deleted_logs={deleted_logs})"
+        return f"OK (converted={converted}, deleted={deleted}, skipped={skipped}, deleted_logs={deleted_logs}, deleted_dot_log={deleted_dot_log}, deleted_title_txt={deleted_title_txt})"
 
     def run(self):
         while not self.quitting:

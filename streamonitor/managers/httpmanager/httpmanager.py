@@ -581,15 +581,20 @@ class HTTPManager(Manager):
                     for streamer in streamers:
                         partial_res = self.do_convert_ts(streamer, streamer.username, streamer.site)
                         if partial_res.startswith("OK"):
-                            results.append(partial_res)
-                        else:
+                            results.append(f"{streamer.username} [{streamer.siteslug}]: {partial_res}")
+                        elif partial_res not in ("No ts files", "No folder"):
                             errors.append(f"{streamer.username} [{streamer.siteslug}]: {partial_res}")
+                    if results:
+                        res = "已清理:\n" + "\n".join(results)
+                        toast_status = "success"
                     if errors:
                         toast_status = "warning"
-                        res = "Some failed" if len(errors) < len(streamers) else "All failed"
                         error_message = "\n".join(errors)
-                    else:
-                        res = f"Converted all ({len(results)} streamers)"
+                        if not results:
+                            res = "Some failed" if len(errors) < len(streamers) else "All failed"
+                    if not results and not errors:
+                        res = "所有 streamer 均无文件需清理"
+                        toast_status = "warning"
             except Exception as e:
                 self.logger.warning(e)
                 res = str(e)
