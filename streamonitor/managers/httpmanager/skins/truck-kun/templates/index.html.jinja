@@ -114,6 +114,13 @@
                 hx-disabled-elt=".modify-streamers"
                 hx-on:click="showToast('开始转换全部 TS → MP4 ...', 'success', 1500)"
                 class="modify-streamers convert-ts-all">Convert All</button>
+            <button hx-get="/refresh/streamers"
+                hx-trigger="click"
+                hx-include=".filter-streamers-state:valid"
+                hx-target="#streamers"
+                hx-swap="innerHTML"
+                hx-disabled-elt="this"
+                title="刷新列表（与每个主播的 Refresh 一致）">Refresh All</button>
         </div>
     </div>
     <div id="error-container">

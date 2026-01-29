@@ -156,6 +156,16 @@
                     class="modify-streamers convert-ts-all btn btn-info">
                     <i class="bi bi-arrow-repeat me-2"></i>Convert All
                 </button>
+                <button hx-get="/refresh/streamers"
+                    hx-trigger="click"
+                    hx-include=".filter-streamers-state:valid"
+                    hx-target="#streamers"
+                    hx-swap="innerHTML"
+                    hx-disabled-elt="this"
+                    class="btn btn-outline-secondary"
+                    title="刷新列表（与每个主播的 Refresh 一致）">
+                    <i class="bi bi-arrow-clockwise me-2"></i>Refresh All
+                </button>
                 <button type="button"
                     onclick="clearFilters()"
                     class="btn btn-warning">

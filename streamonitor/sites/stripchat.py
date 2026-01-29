@@ -173,14 +173,14 @@ class StripChat(RoomIdBot):
         base = '-'.join([self.site, self.username, timestamp])
         filename = os.path.join(folder, base + '.' + CONTAINER)
         
-        # Store original title in sidecar file; after MP4 conversion we rename using this
+        # Store original title from live site as-is (no _ or other replacement); used for final rename after conversion
         topic = None
         if hasattr(self, 'lastInfo') and self.lastInfo:
             topic = self.lastInfo.get('topic')
         title_path = os.path.join(folder, base + '.title.txt')
         try:
             with open(title_path, 'w', encoding='utf-8') as f:
-                f.write(topic if topic else '')
+                f.write('' if topic is None else str(topic))
         except OSError:
             pass
         
