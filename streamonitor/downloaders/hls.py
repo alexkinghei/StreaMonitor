@@ -108,6 +108,10 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
         downloaded_list = []
         outfile = [None]  # Use list to allow modification in nested function
         last_success = time.monotonic()
+        # fMP4 streams: cache init segment (ftyp+moov) so we can prepend it to each new file after rotation.
+        # Without this, post-rotation segments would be raw moof+mdat only and ffmpeg would fail (track id/trex errors).
+        init_segment_bytes = [b'']
+        just_rotated = [False]  # True only after 800MB rotation so we prepend init only to new segment files
 
         def within_grace():
             return (time.monotonic() - last_success) <= float(HLS_TRANSIENT_GRACE_SECONDS)
@@ -205,8 +209,14 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                     new_filename = self.genOutFilename(create_dir=True)
                     current_file = new_filename[:-len('.' + CONTAINER)] + '.ts'
                     current_file_size = 0
+                    just_rotated[0] = True
                 if outfile[0] is None or outfile[0].closed:
                     outfile[0] = open(current_file, 'ab')
+                    # fMP4: prepend init segment only after rotation (first file gets init from the loop)
+                    if init_segment_bytes[0] and just_rotated[0]:
+                        outfile[0].write(init_segment_bytes[0])
+                        current_file_size += len(init_segment_bytes[0])
+                        just_rotated[0] = False
                 return outfile[0]
             else:
                 if outfile[0] is None:
@@ -241,7 +251,12 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                         sleep(float(HLS_RETRY_SLEEP_SECONDS))
                         continue
                     return
-                for chunk in chunklist.segment_map + chunklist.segments:
+                # Support both MPEG-TS and fMP4: segment_map is the init segment(s), segments are media.
+                _sm = getattr(chunklist, 'segment_map', None)
+                init_list = _sm if isinstance(_sm, list) else ([_sm] if _sm else [])
+                combined = init_list + list(chunklist.segments)
+                n_init = len(init_list)
+                for i, chunk in enumerate(combined):
                     if chunk.uri in downloaded_list:
                         continue
                     did_download = True
@@ -272,6 +287,9 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                             sleep(float(HLS_RETRY_SLEEP_SECONDS))
                             break
                         return
+                    # Cache fMP4 init segment so we can prepend it to each new file after 800MB rotation
+                    if segment_during_download and i < n_init:
+                        init_segment_bytes[0] += m.content
                     file_handle = get_output_file()
                     file_handle.write(m.content)
                     last_success = time.monotonic()
