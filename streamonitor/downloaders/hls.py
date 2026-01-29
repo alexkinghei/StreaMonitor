@@ -45,18 +45,55 @@ def _normalize_ts_to_188(data):
     while i + TS_PACKET_SIZE <= len(data):
         if data[i] == 0x47:  # sync byte
             out.append(data[i:i + TS_PACKET_SIZE])
-            # Advance by detected packet size (188, 192, or 204)
+            # Advance by detected packet size (188, 192, or 204); index must be < len(data)
             if i + 188 < len(data) and data[i + 188] == 0x47:
                 i += 188
-            elif i + 192 <= len(data) and data[i + 192] == 0x47:
+            elif i + 192 < len(data) and data[i + 192] == 0x47:
                 i += 192
-            elif i + 204 <= len(data) and data[i + 204] == 0x47:
+            elif i + 204 < len(data) and data[i + 204] == 0x47:
                 i += 204
             else:
                 i += 188
         else:
             i += 1
     return b''.join(out)
+
+
+def _ts_pid(packet):
+    """Return PID of a 188-byte TS packet."""
+    if len(packet) < 3:
+        return -1
+    return ((packet[1] & 0x1F) << 8) | packet[2]
+
+
+def _ensure_pat_pmt_at_start(data):
+    """Reorder TS packets so PAT (PID 0) and PMT appear at the start. FFmpeg needs them to detect streams."""
+    if not data or len(data) < TS_PACKET_SIZE:
+        return data
+    packets = [data[i:i + TS_PACKET_SIZE] for i in range(0, len(data), TS_PACKET_SIZE) if data[i] == 0x47]
+    if not packets:
+        return data
+    pat_packets = [p for p in packets if _ts_pid(p) == 0x0000]
+    if not pat_packets:
+        return data  # no PAT in segment, cannot fix
+    # PMT PID from PAT or default 0x0100
+    pmt_pid = 0x0100
+    for p in pat_packets:
+        if len(p) < 18:
+            continue
+        # payload_start_indicator is in byte 1, bit 6; payload starts at byte 4 when no adaptation
+        if (p[1] & 0x40) == 0:
+            continue
+        ptr = p[4]  # pointer_field is first byte of payload
+        off = 5 + ptr  # PAT section starts after pointer_field
+        if off + 12 <= len(p) and p[off] == 0x00:  # table_id PAT
+            pmt_pid = ((p[off + 10] & 0x1F) << 8) | p[off + 11]
+            break
+    pmt_packets = [p for p in packets if _ts_pid(p) == pmt_pid]
+    pat_pids = {0x0000, pmt_pid}
+    rest = [p for p in packets if _ts_pid(p) not in pat_pids]
+    reordered = pat_packets + pmt_packets + rest
+    return b''.join(reordered) if reordered else data
 
 
 def getVideoNativeHLS(self, url, filename, m3u_processor=None, file_original=None):
@@ -328,7 +365,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None, file_original=Non
                             pass
                     if e.exit_code and e.exit_code != 255:
                         self.logger.error(f'Error converting final segment: {e}. Check {stderr_path!r} for ffmpeg stderr.')
-                    # Fallback: normalize TS to 188-byte packets and retry (helps mixed 188/192/204 from manual cut)
+                    # Fallback: normalize TS to 188-byte packets, put PAT/PMT at start, then retry
                     norm_ts = current_file + '.norm.ts'
                     fallback_ok = False
                     try:
@@ -336,37 +373,40 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None, file_original=Non
                             raw = f.read()
                         norm_data = _normalize_ts_to_188(raw)
                         if len(norm_data) >= MIN_SEGMENT_SIZE:
-                            with open(norm_ts, 'wb') as f:
-                                f.write(norm_data)
-                            devnull = subprocess.DEVNULL
-                            out_opts = '-c:a copy -c:v copy'
-                            # Try 1: with forced mpegts + probe options
-                            try:
-                                ff2 = FFmpeg(executable=FFMPEG_PATH, inputs={norm_ts: HLS_TS_INPUT_OPTS}, outputs={final_safe: out_opts})
-                                ff2.run(stdout=devnull, stderr=devnull)
-                                fallback_ok = True
-                            except FFRuntimeError:
-                                # Try 2: no -f mpegts, let FFmpeg auto-detect (can help when content is fMP4 or demuxer is picky)
+                            # FFmpeg needs PAT/PMT at start to detect streams (segment may start mid-stream on cut)
+                            norm_data = _ensure_pat_pmt_at_start(norm_data)
+                            if len(norm_data) >= MIN_SEGMENT_SIZE:
+                                with open(norm_ts, 'wb') as f:
+                                    f.write(norm_data)
+                                devnull = subprocess.DEVNULL
+                                out_opts = '-c:a copy -c:v copy'
+                                # Try 1: with forced mpegts + probe options
                                 try:
-                                    ff3 = FFmpeg(executable=FFMPEG_PATH, inputs={norm_ts: '-probesize 20M -analyzeduration 20M'}, outputs={final_safe: out_opts})
-                                    ff3.run(stdout=devnull, stderr=devnull)
+                                    ff2 = FFmpeg(executable=FFMPEG_PATH, inputs={norm_ts: HLS_TS_INPUT_OPTS}, outputs={final_safe: out_opts})
+                                    ff2.run(stdout=devnull, stderr=devnull)
                                     fallback_ok = True
                                 except FFRuntimeError:
-                                    pass
-                            if fallback_ok:
-                                os.remove(norm_ts)
-                                os.remove(current_file)
-                                if final_original != final_safe and os.path.exists(final_safe):
+                                    # Try 2: no -f mpegts, let FFmpeg auto-detect (can help when content is fMP4 or demuxer is picky)
                                     try:
-                                        os.rename(final_safe, final_original)
-                                    except OSError:
+                                        ff3 = FFmpeg(executable=FFMPEG_PATH, inputs={norm_ts: '-probesize 20M -analyzeduration 20M'}, outputs={final_safe: out_opts})
+                                        ff3.run(stdout=devnull, stderr=devnull)
+                                        fallback_ok = True
+                                    except FFRuntimeError:
                                         pass
-                                if os.path.exists(stderr_path):
-                                    try:
-                                        os.remove(stderr_path)
-                                    except OSError:
-                                        pass
-                                self.logger.info('Final segment converted after normalizing TS (fallback).')
+                                if fallback_ok:
+                                    os.remove(norm_ts)
+                                    os.remove(current_file)
+                                    if final_original != final_safe and os.path.exists(final_safe):
+                                        try:
+                                            os.rename(final_safe, final_original)
+                                        except OSError:
+                                            pass
+                                    if os.path.exists(stderr_path):
+                                        try:
+                                            os.remove(stderr_path)
+                                        except OSError:
+                                            pass
+                                    self.logger.info('Final segment converted after normalizing TS (fallback).')
                     except Exception:
                         pass
                     if not fallback_ok:
