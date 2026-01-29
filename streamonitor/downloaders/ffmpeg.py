@@ -16,7 +16,7 @@ _STDERR_STREAM_ERROR_PATTERNS = (
 )
 
 
-def getVideoFfmpeg(self, url, filename):
+def getVideoFfmpeg(self, url, filename, file_original=None, **kwargs):
     cmd = [
         FFMPEG_PATH,
         '-user_agent', self.headers['User-Agent']

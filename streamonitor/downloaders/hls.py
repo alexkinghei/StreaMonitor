@@ -30,7 +30,9 @@ if not _http_lib:
 MIN_SEGMENT_SIZE = 64 * 1024  # 64 KiB
 
 
-def getVideoNativeHLS(self, url, filename, m3u_processor=None):
+def getVideoNativeHLS(self, url, filename, m3u_processor=None, file_original=None):
+    if file_original is None:
+        file_original = filename
     self.stopDownloadFlag = False
     error = False
     tmpfilename = filename[:-len('.' + CONTAINER)] + '.tmp.ts'
@@ -43,7 +45,8 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
     segment_during_download = segment_size_bytes is not None
     current_file = None
     current_file_size = 0
-    segment_files = []  # Track all segment files for final conversion
+    current_original_mp4 = file_original  # desired final name for current segment
+    segment_files = []  # (ts_path, safe_mp4_path, original_mp4_path) for completed segments
 
     if segment_during_download:
         # Use the initial filename for first segment (but as .ts)
@@ -51,7 +54,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
         current_file_size = 0
 
     def execute():
-        nonlocal error, current_file, current_file_size, segment_files
+        nonlocal error, current_file, current_file_size, current_original_mp4, segment_files
         downloaded_list = []
         outfile = [None]  # Use list to allow modification in nested function
         last_success = time.monotonic()
@@ -71,8 +74,11 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                 self.logger.debug('Refresh playlist URL failed: %s', e)
             return False
         
-        def convert_segment_to_mp4(ts_file_path, final_filename):
-            """Convert a .ts segment file to final format (MP4) in background thread"""
+        def convert_segment_to_mp4(ts_file_path, final_safe_filename, final_original_filename=None):
+            """Convert a .ts segment file to final format (MP4) in background thread; optionally rename to original name."""
+            if final_original_filename is None:
+                final_original_filename = final_safe_filename
+
             def convert():
                 try:
                     # Wait a bit to ensure file is fully written and closed
@@ -88,12 +94,25 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                             pass
                         return
                     
-                    stdout = open(final_filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
-                    stderr = open(final_filename + '.postprocess_stderr.log', 'w+') if DEBUG else subprocess.DEVNULL
+                    stdout = open(final_safe_filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
+                    stderr = open(final_safe_filename + '.postprocess_stderr.log', 'w+') if DEBUG else subprocess.DEVNULL
                     output_str = '-c:a copy -c:v copy'
-                    ff = FFmpeg(executable=FFMPEG_PATH, inputs={ts_file_path: None}, outputs={final_filename: output_str})
+                    ff = FFmpeg(executable=FFMPEG_PATH, inputs={ts_file_path: None}, outputs={final_safe_filename: output_str})
                     ff.run(stdout=stdout, stderr=stderr)
                     os.remove(ts_file_path)
+                    # Rename to original filename if different (e.g. special chars / emoji in title)
+                    if final_original_filename != final_safe_filename and os.path.exists(final_safe_filename):
+                        try:
+                            os.rename(final_safe_filename, final_original_filename)
+                            for ext in ('.postprocess_stdout.log', '.postprocess_stderr.log'):
+                                p = final_safe_filename + ext
+                                if os.path.exists(p):
+                                    try:
+                                        os.remove(p)
+                                    except OSError:
+                                        pass
+                        except OSError as e:
+                            self.logger.warning(f'Could not rename to original filename: {e}')
                 except FFRuntimeError as e:
                     if e.exit_code and e.exit_code != 255:
                         self.logger.error(f'Error converting segment: {e}')
@@ -106,7 +125,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
             return convert_thread
         
         def get_output_file():
-            nonlocal current_file, current_file_size, segment_files
+            nonlocal current_file, current_file_size, current_original_mp4, segment_files
             if segment_during_download:
                 # Check if we need to start a new segment
                 if current_file_size >= int(segment_size_bytes):
@@ -116,13 +135,12 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                     
                     # Convert the completed segment to MP4 (like pause/resume logic)
                     prev_ts_file = current_file
-                    # Generate final filename by replacing .ts with .mp4
-                    prev_final_filename = prev_ts_file.replace('.ts', '.' + CONTAINER)
+                    prev_final_safe = prev_ts_file.replace('.ts', '.' + CONTAINER)
                     if os.path.exists(prev_ts_file):
                         prev_sz = os.path.getsize(prev_ts_file)
                         if prev_sz >= MIN_SEGMENT_SIZE:
-                            segment_files.append((prev_ts_file, prev_final_filename))
-                            convert_segment_to_mp4(prev_ts_file, prev_final_filename)
+                            segment_files.append((prev_ts_file, prev_final_safe, current_original_mp4))
+                            convert_segment_to_mp4(prev_ts_file, prev_final_safe, current_original_mp4)
                         elif prev_sz > 0:
                             try:
                                 os.remove(prev_ts_file)
@@ -130,8 +148,13 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                                 pass
                     
                     # Generate new filename with timestamp (like pause/resume)
-                    new_filename = self.genOutFilename(create_dir=True)
-                    current_file = new_filename[:-len('.' + CONTAINER)] + '.ts'
+                    new_result = self.genOutFilename(create_dir=True)
+                    if isinstance(new_result, tuple):
+                        new_safe, new_original = new_result
+                    else:
+                        new_safe = new_original = new_result
+                    current_file = new_safe[:-len('.' + CONTAINER)] + '.ts'
+                    current_original_mp4 = new_original
                     current_file_size = 0
                 if outfile[0] is None or outfile[0].closed:
                     outfile[0] = open(current_file, 'ab')
@@ -235,15 +258,16 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
         if current_file and os.path.exists(current_file):
             last_sz = os.path.getsize(current_file)
             if last_sz >= MIN_SEGMENT_SIZE:
-                final_filename = current_file.replace('.ts', '.' + CONTAINER)
-                stderr_path = final_filename + '.postprocess_stderr.log'
+                final_safe = current_file.replace('.ts', '.' + CONTAINER)
+                final_original = current_original_mp4
+                stderr_path = final_safe + '.postprocess_stderr.log'
                 stderr_file = None
                 try:
                     # Always write stderr log so it can be inspected when conversion fails (e.g. exit 254)
-                    stdout = open(final_filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
+                    stdout = open(final_safe + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
                     stderr_file = open(stderr_path, 'w+')
                     output_str = '-c:a copy -c:v copy'
-                    ff = FFmpeg(executable=FFMPEG_PATH, inputs={current_file: None}, outputs={final_filename: output_str})
+                    ff = FFmpeg(executable=FFMPEG_PATH, inputs={current_file: None}, outputs={final_safe: output_str})
                     ff.run(stdout=stdout, stderr=stderr_file)
                     stderr_file.close()
                     stderr_file = None
@@ -252,6 +276,18 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                     except OSError:
                         pass
                     os.remove(current_file)
+                    if final_original != final_safe and os.path.exists(final_safe):
+                        try:
+                            os.rename(final_safe, final_original)
+                            for ext in ('.postprocess_stdout.log', '.postprocess_stderr.log'):
+                                p = final_safe + ext
+                                if os.path.exists(p):
+                                    try:
+                                        os.remove(p)
+                                    except OSError:
+                                        pass
+                        except OSError as e:
+                            self.logger.warning(f'Could not rename final segment to original filename: {e}')
                 except FFRuntimeError as e:
                     if stderr_file:
                         try:
@@ -295,6 +331,18 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
             ff = FFmpeg(executable=FFMPEG_PATH, inputs={tmpfilename: None}, outputs={filename: output_str})
             ff.run(stdout=stdout, stderr=stderr)
             os.remove(tmpfilename)
+            if file_original != filename and os.path.exists(filename):
+                try:
+                    os.rename(filename, file_original)
+                    for ext in ('.postprocess_stdout.log', '.postprocess_stderr.log'):
+                        p = filename + ext
+                        if os.path.exists(p):
+                            try:
+                                os.remove(p)
+                            except OSError:
+                                pass
+                except OSError as e:
+                    self.logger.warning(f'Could not rename to original filename: {e}')
         except FFRuntimeError as e:
             if e.exit_code and e.exit_code != 255:
                 return False

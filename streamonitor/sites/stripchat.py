@@ -66,7 +66,9 @@ class StripChat(RoomIdBot):
         super().__init__(username, room_id)
         self._id = None
         self.vr = False
-        self.getVideo = lambda _, url, filename: getVideoNativeHLS(self, url, filename, StripChat.m3u_decoder)
+        self.getVideo = lambda _, url, filename, file_original=None: getVideoNativeHLS(
+            self, url, filename, StripChat.m3u_decoder, file_original=file_original
+        )
 
     @classmethod
     def getInitialData(cls):
@@ -174,44 +176,43 @@ class StripChat(RoomIdBot):
         if hasattr(self, 'lastInfo') and self.lastInfo:
             topic = self.lastInfo.get('topic')
         
-        # Clean topic for filename (remove invalid / problematic characters)
+        # Original topic: only replace filesystem-illegal chars (for final filename shown to user)
+        topic_original = None
+        topic_safe = None
         if topic:
-            # Remove or replace characters that are invalid in filenames
-            # Windows: < > : " / \ | ? *
-            # Unix: / (forward slash)
-            # ! shell/history; ~ ～ and emoji can cause ffmpeg exit 254/183
+            topic_str = str(topic)
+            # Light sanitize for "original" filename: only chars illegal on Windows/Unix
+            illegal_fs = r'[<>:"/\\|?*\x00-\x1f]'
+            topic_original = re.sub(illegal_fs, '_', topic_str)
+            topic_original = re.sub(r'\s+', '_', topic_original)
+            topic_original = re.sub(r'_+', '_', topic_original).strip(' ._')
+            if len(topic_original.encode('utf-8')) > 80:
+                topic_original = topic_original.encode('utf-8')[:80].decode('utf-8', errors='ignore').strip(' ._')
+            if not topic_original:
+                topic_original = None
+
+            # Heavy sanitize for "safe" filename used during processing (avoids ffmpeg exit 254/183)
             invalid_chars = r'[<>:"/\\|?*!\x00-\x1f~～]'
-            topic = re.sub(invalid_chars, '_', str(topic))
-            # Remove emoji / symbols / format chars that can break paths or make ffmpeg unable to re-open files
-            # - So/Sk: emojis and other symbols
-            # - Cf: zero-width / format chars (e.g. U+200B) that make filenames look identical but differ in bytes
-            topic = ''.join(
-                c for c in topic
+            topic_safe = re.sub(invalid_chars, '_', topic_str)
+            topic_safe = ''.join(
+                c for c in topic_safe
                 if unicodedata.category(c) not in ('So', 'Sk', 'Cf') and ord(c) < 0x10000
             )
-            # Collapse whitespace to '_' to avoid odd unicode spaces in filenames
-            topic = re.sub(r'\s+', '_', topic)
-            # Collapse multiple underscores
-            topic = re.sub(r'_+', '_', topic)
-            # Remove leading/trailing spaces and dots
-            topic = topic.strip(' ._')
-            # Limit topic by UTF-8 byte length (80 bytes) so filename stays safe and avoids ffmpeg/path issues
-            topic_utf8 = topic.encode('utf-8')
+            topic_safe = re.sub(r'\s+', '_', topic_safe)
+            topic_safe = re.sub(r'_+', '_', topic_safe).strip(' ._')
+            topic_utf8 = topic_safe.encode('utf-8')
             if len(topic_utf8) > 80:
-                topic = topic_utf8[:80].decode('utf-8', errors='ignore').strip(' ._')
-            # If topic is empty after cleaning, set to None
-            if not topic:
-                topic = None
-        
-        # Build filename: {platform}-{username}-{timestamp}-{topic}.{container}
-        # Format: StripChat-username-2025-01-26-143022-123-topic.mp4
-        filename_parts = [self.site, self.username, timestamp]
-        if topic:
-            filename_parts.append(topic)
-        
-        filename = os.path.join(folder, '-'.join(filename_parts) + '.' + CONTAINER)
-        
-        return filename
+                topic_safe = topic_utf8[:80].decode('utf-8', errors='ignore').strip(' ._')
+            if not topic_safe:
+                topic_safe = 'topic'  # placeholder when topic is only emoji/symbols
+
+        # Build safe and original paths; if no topic or same after sanitize, both paths can match
+        parts_base = [self.site, self.username, timestamp]
+        safe_parts = parts_base + [topic_safe] if topic_safe else parts_base
+        original_parts = parts_base + [topic_original] if topic_original else parts_base
+        safe_path = os.path.join(folder, '-'.join(safe_parts) + '.' + CONTAINER)
+        original_path = os.path.join(folder, '-'.join(original_parts) + '.' + CONTAINER)
+        return (safe_path, original_path)
 
     def getVideoUrl(self):
         return self.getWantedResolutionPlaylist(None)

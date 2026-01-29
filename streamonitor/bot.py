@@ -356,8 +356,12 @@ class Bot(Thread):
                                 continue
                             self.log('Started downloading show')
                             self.recording = True
-                            file = self.genOutFilename()
-                            ret = self.getVideo(self, video_url, file)
+                            file_result = self.genOutFilename()
+                            if isinstance(file_result, tuple):
+                                file_safe, file_original = file_result
+                            else:
+                                file_safe = file_original = file_result
+                            ret = self.getVideo(self, video_url, file_safe, file_original=file_original)
                             if not ret:
                                 self.sc = Status.ERROR
                                 self.recording = False
