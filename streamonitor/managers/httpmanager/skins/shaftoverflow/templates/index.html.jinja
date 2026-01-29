@@ -145,6 +145,17 @@
                     class="modify-streamers start-streamers btn btn-success">
                     <i class="bi bi-play-fill me-2"></i>Start All
                 </button>
+                <button hx-patch="/convert-ts/streamers"
+                    hx-trigger="click"
+                    hx-include=".filter-streamers-state:valid"
+                    hx-target="#streamers"
+                    hx-swap="innerHTML settle:3s"
+                    hx-sync="#streamers:queue first"
+                    hx-disabled-elt=".modify-streamers"
+                    hx-on:click="showToast('开始转换全部 TS → MP4 ...', 'success', 1500)"
+                    class="modify-streamers convert-ts-all btn btn-info">
+                    <i class="bi bi-arrow-repeat me-2"></i>Convert All
+                </button>
                 <button type="button"
                     onclick="clearFilters()"
                     class="btn btn-warning">

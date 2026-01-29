@@ -563,4 +563,46 @@ class HTTPManager(Manager):
             } | filter_context
             return render_template('streamers_result.html.jinja', **context), status_code
 
+        @app.route("/convert-ts/streamers", methods=['PATCH'])
+        @login_required
+        def convert_ts_all_streamers():
+            status_code = 200
+            toast_status = "success"
+            streamers, filter_context = streamer_list(self.streamers, request)
+            res = ""
+            error_message = ""
+            try:
+                if len(streamers) == 0:
+                    res = "no matching streamers"
+                    toast_status = "warning"
+                else:
+                    errors = []
+                    results = []
+                    for streamer in streamers:
+                        partial_res = self.do_convert_ts(streamer, streamer.username, streamer.site)
+                        if partial_res.startswith("OK"):
+                            results.append(partial_res)
+                        else:
+                            errors.append(f"{streamer.username} [{streamer.siteslug}]: {partial_res}")
+                    if errors:
+                        toast_status = "warning"
+                        res = "Some failed" if len(errors) < len(streamers) else "All failed"
+                        error_message = "\n".join(errors)
+                    else:
+                        res = f"Converted all ({len(results)} streamers)"
+            except Exception as e:
+                self.logger.warning(e)
+                res = str(e)
+                toast_status = "error"
+                status_code = 500
+            context = {
+                'streamers': streamers,
+                'refresh_freq': WEB_LIST_FREQUENCY,
+                'toast_status': toast_status,
+                'toast_message': res,
+                'error_message': error_message,
+                'confirm_deletes': confirm_deletes(request.headers.get('User-Agent')),
+            } | filter_context
+            return render_template('streamers_result.html.jinja', **context), status_code
+
         app.run(host=WEBSERVER_HOST, port=WEBSERVER_PORT)

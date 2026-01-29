@@ -1,5 +1,6 @@
 import m3u8
 import os
+import re
 import subprocess
 import time
 from threading import Thread
@@ -28,6 +29,45 @@ if not _http_lib:
 
 # Segments smaller than this are discarded (no real content); avoids ~262B empty/minimal MP4s
 MIN_SEGMENT_SIZE = 64 * 1024  # 64 KiB
+
+
+def _rename_mp4_by_title(mp4_path, logger=None):
+    """If base.title.txt exists with non-empty title, rename mp4 to base-title.mp4 and remove .title.txt."""
+    if not mp4_path or not mp4_path.endswith('.' + CONTAINER):
+        return
+    folder = os.path.dirname(mp4_path)
+    base = os.path.basename(mp4_path)[: -len('.' + CONTAINER)]
+    title_path = os.path.join(folder, base + '.title.txt')
+    if not os.path.exists(title_path):
+        return
+    try:
+        with open(title_path, 'r', encoding='utf-8') as f:
+            title = (f.read() or '').strip()
+    except OSError:
+        return
+    try:
+        os.remove(title_path)
+    except OSError:
+        pass
+    if not title:
+        return
+    # Only replace filesystem-illegal chars for final filename
+    illegal_fs = r'[<>:"/\\|?*\x00-\x1f]'
+    safe_title = re.sub(illegal_fs, '_', title)
+    safe_title = re.sub(r'\s+', '_', safe_title)
+    safe_title = re.sub(r'_+', '_', safe_title).strip(' ._')
+    if len(safe_title.encode('utf-8')) > 80:
+        safe_title = safe_title.encode('utf-8')[:80].decode('utf-8', errors='ignore').strip(' ._')
+    if not safe_title:
+        return
+    final_path = os.path.join(folder, base + '-' + safe_title + '.' + CONTAINER)
+    if final_path == mp4_path or not os.path.exists(mp4_path):
+        return
+    try:
+        os.rename(mp4_path, final_path)
+    except OSError as e:
+        if logger:
+            logger.warning('Could not rename to title filename: %s', e)
 
 
 def getVideoNativeHLS(self, url, filename, m3u_processor=None):
@@ -94,6 +134,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                     ff = FFmpeg(executable=FFMPEG_PATH, inputs={ts_file_path: None}, outputs={final_filename: output_str})
                     ff.run(stdout=stdout, stderr=stderr)
                     os.remove(ts_file_path)
+                    _rename_mp4_by_title(final_filename, self.logger)
                 except FFRuntimeError as e:
                     if e.exit_code and e.exit_code != 255:
                         self.logger.error(f'Error converting segment: {e}')
@@ -252,6 +293,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                     except OSError:
                         pass
                     os.remove(current_file)
+                    _rename_mp4_by_title(final_filename, self.logger)
                 except FFRuntimeError as e:
                     if stderr_file:
                         try:
@@ -295,6 +337,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
             ff = FFmpeg(executable=FFMPEG_PATH, inputs={tmpfilename: None}, outputs={filename: output_str})
             ff.run(stdout=stdout, stderr=stderr)
             os.remove(tmpfilename)
+            _rename_mp4_by_title(filename, self.logger)
         except FFRuntimeError as e:
             if e.exit_code and e.exit_code != 255:
                 return False

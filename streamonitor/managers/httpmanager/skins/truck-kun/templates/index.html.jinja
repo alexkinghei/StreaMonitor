@@ -106,6 +106,14 @@
                 hx-sync="#streamers:queue first"
                 hx-disabled-elt=".modify-streamers" 
                 class="modify-streamers start-streamers">Start All</button>
+            <button hx-patch="/convert-ts/streamers"
+                hx-trigger="click"
+                hx-include=".filter-streamers-state:valid"
+                hx-swap="innerHTML settle:3s"
+                hx-sync="#streamers:queue first"
+                hx-disabled-elt=".modify-streamers"
+                hx-on:click="showToast('开始转换全部 TS → MP4 ...', 'success', 1500)"
+                class="modify-streamers convert-ts-all">Convert All</button>
         </div>
     </div>
     <div id="error-container">

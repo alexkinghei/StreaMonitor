@@ -169,47 +169,20 @@ class StripChat(RoomIdBot):
         milliseconds = now.microsecond // 1000
         timestamp = now.strftime(f"%Y-%m-%d-%H%M%S-{milliseconds:03d}")
         
-        # Get topic from lastInfo if available
+        # Safe path only: no topic in filename (avoids FFmpeg/path issues with Chinese, !, emoji)
+        base = '-'.join([self.site, self.username, timestamp])
+        filename = os.path.join(folder, base + '.' + CONTAINER)
+        
+        # Store original title in sidecar file; after MP4 conversion we rename using this
         topic = None
         if hasattr(self, 'lastInfo') and self.lastInfo:
             topic = self.lastInfo.get('topic')
-        
-        # Clean topic for filename (remove invalid / problematic characters)
-        if topic:
-            # Remove or replace characters that are invalid in filenames
-            # Windows: < > : " / \ | ? *
-            # Unix: / (forward slash)
-            # ! shell/history; ~ ～ and emoji can cause ffmpeg exit 254/183
-            invalid_chars = r'[<>:"/\\|?*!\x00-\x1f~～]'
-            topic = re.sub(invalid_chars, '_', str(topic))
-            # Remove emoji / symbols / format chars that can break paths or make ffmpeg unable to re-open files
-            # - So/Sk: emojis and other symbols
-            # - Cf: zero-width / format chars (e.g. U+200B) that make filenames look identical but differ in bytes
-            topic = ''.join(
-                c for c in topic
-                if unicodedata.category(c) not in ('So', 'Sk', 'Cf') and ord(c) < 0x10000
-            )
-            # Collapse whitespace to '_' to avoid odd unicode spaces in filenames
-            topic = re.sub(r'\s+', '_', topic)
-            # Collapse multiple underscores
-            topic = re.sub(r'_+', '_', topic)
-            # Remove leading/trailing spaces and dots
-            topic = topic.strip(' ._')
-            # Limit topic by UTF-8 byte length (80 bytes) so filename stays safe and avoids ffmpeg/path issues
-            topic_utf8 = topic.encode('utf-8')
-            if len(topic_utf8) > 80:
-                topic = topic_utf8[:80].decode('utf-8', errors='ignore').strip(' ._')
-            # If topic is empty after cleaning, set to None
-            if not topic:
-                topic = None
-        
-        # Build filename: {platform}-{username}-{timestamp}-{topic}.{container}
-        # Format: StripChat-username-2025-01-26-143022-123-topic.mp4
-        filename_parts = [self.site, self.username, timestamp]
-        if topic:
-            filename_parts.append(topic)
-        
-        filename = os.path.join(folder, '-'.join(filename_parts) + '.' + CONTAINER)
+        title_path = os.path.join(folder, base + '.title.txt')
+        try:
+            with open(title_path, 'w', encoding='utf-8') as f:
+                f.write(topic if topic else '')
+        except OSError:
+            pass
         
         return filename
 
