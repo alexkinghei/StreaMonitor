@@ -32,6 +32,32 @@ MIN_SEGMENT_SIZE = 64 * 1024  # 64 KiB
 # TS input options: force mpegts, probe more so variable packet size (188/192/204) still yields streams
 HLS_TS_INPUT_OPTS = '-f mpegts -probesize 10M -analyzeduration 10M -scan_all_pmts 1'
 
+# Standard MPEG-TS packet size (sync 0x47 + 187 bytes). HLS chunks may be 188/192/204 mixed.
+TS_PACKET_SIZE = 188
+
+
+def _normalize_ts_to_188(data):
+    """Extract 188-byte TS packets from data that may have 188/192/204 byte packets. Returns bytes."""
+    if not data or len(data) < TS_PACKET_SIZE:
+        return b''
+    out = []
+    i = 0
+    while i + TS_PACKET_SIZE <= len(data):
+        if data[i] == 0x47:  # sync byte
+            out.append(data[i:i + TS_PACKET_SIZE])
+            # Advance by detected packet size (188, 192, or 204)
+            if i + 188 < len(data) and data[i + 188] == 0x47:
+                i += 188
+            elif i + 192 <= len(data) and data[i + 192] == 0x47:
+                i += 192
+            elif i + 204 <= len(data) and data[i + 204] == 0x47:
+                i += 204
+            else:
+                i += 188
+        else:
+            i += 1
+    return b''.join(out)
+
 
 def getVideoNativeHLS(self, url, filename, m3u_processor=None, file_original=None):
     if file_original is None:
@@ -227,10 +253,13 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None, file_original=Non
                             break
                         return
                     file_handle = get_output_file()
-                    file_handle.write(m.content)
-                    last_success = time.monotonic()
-                    if segment_during_download:
-                        current_file_size += len(m.content)
+                    # Normalize to 188-byte TS packets so FFmpeg can detect streams (avoids mixed 188/192/204)
+                    chunk_data = _normalize_ts_to_188(m.content)
+                    if chunk_data:
+                        file_handle.write(chunk_data)
+                        last_success = time.monotonic()
+                        if segment_during_download:
+                            current_file_size += len(chunk_data)
                     if self.stopDownloadFlag:
                         return
                 if not did_download:
@@ -299,6 +328,39 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None, file_original=Non
                             pass
                     if e.exit_code and e.exit_code != 255:
                         self.logger.error(f'Error converting final segment: {e}. Check {stderr_path!r} for ffmpeg stderr.')
+                    # Fallback: normalize TS to 188-byte packets and retry (helps mixed 188/192/204 from manual cut)
+                    norm_ts = current_file + '.norm.ts'
+                    try:
+                        with open(current_file, 'rb') as f:
+                            raw = f.read()
+                        norm_data = _normalize_ts_to_188(raw)
+                        if len(norm_data) >= MIN_SEGMENT_SIZE:
+                            with open(norm_ts, 'wb') as f:
+                                f.write(norm_data)
+                            stdout = subprocess.DEVNULL
+                            stderr = subprocess.DEVNULL
+                            ff2 = FFmpeg(executable=FFMPEG_PATH, inputs={norm_ts: HLS_TS_INPUT_OPTS}, outputs={final_safe: '-c:a copy -c:v copy'})
+                            ff2.run(stdout=stdout, stderr=stderr)
+                            os.remove(norm_ts)
+                            os.remove(current_file)
+                            if final_original != final_safe and os.path.exists(final_safe):
+                                try:
+                                    os.rename(final_safe, final_original)
+                                except OSError:
+                                    pass
+                            if os.path.exists(stderr_path):
+                                try:
+                                    os.remove(stderr_path)
+                                except OSError:
+                                    pass
+                            self.logger.info('Final segment converted after normalizing TS packet size.')
+                    except Exception:
+                        if os.path.exists(norm_ts):
+                            try:
+                                os.remove(norm_ts)
+                            except OSError:
+                                pass
+                        self.logger.warning(f'TS file kept (conversion failed): {current_file!r}. You can convert it manually.')
                 except Exception as e:
                     if stderr_file:
                         try:
@@ -306,6 +368,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None, file_original=Non
                         except OSError:
                             pass
                     self.logger.error(f'Unexpected error converting final segment: {e}. Check {stderr_path!r} for ffmpeg stderr.')
+                    self.logger.warning(f'TS file kept: {current_file!r}. You can convert it manually.')
             else:
                 try:
                     os.remove(current_file)
