@@ -51,13 +51,14 @@ def _rename_mp4_by_title(mp4_path, logger=None):
         except OSError:
             pass
         return
-    # Only replace filesystem-illegal chars for final filename
+    # Only replace filesystem-illegal chars (keep spaces and original punctuation like ~ !)
     illegal_fs = r'[<>:"/\\|?*\x00-\x1f]'
     safe_title = re.sub(illegal_fs, '_', title)
-    safe_title = re.sub(r'\s+', '_', safe_title)
+    safe_title = re.sub(r'\s+', ' ', safe_title)  # collapse spaces to single space, keep space
     safe_title = re.sub(r'_+', '_', safe_title).strip(' ._')
-    if len(safe_title.encode('utf-8')) > 80:
-        safe_title = safe_title.encode('utf-8')[:80].decode('utf-8', errors='ignore').strip(' ._')
+    # Allow longer title in filename (200 bytes) so long titles are not cut off
+    if len(safe_title.encode('utf-8')) > 200:
+        safe_title = safe_title.encode('utf-8')[:200].decode('utf-8', errors='ignore').strip(' ._')
     if not safe_title:
         try:
             os.remove(title_path)
