@@ -8,7 +8,7 @@ from ffmpy import FFmpeg, FFRuntimeError
 from parameters import DEBUG, CONTAINER, SEGMENT_SIZE, parse_segment_size, FFMPEG_PATH
 
 
-def getVideoWSSVR(self, url, filename, file_original=None, **kwargs):
+def getVideoWSSVR(self, url, filename):
     self.stopDownloadFlag = False
     error = False
     url = url.replace('fmp4s://', 'wss://')

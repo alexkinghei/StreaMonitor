@@ -29,76 +29,8 @@ if not _http_lib:
 # Segments smaller than this are discarded (no real content); avoids ~262B empty/minimal MP4s
 MIN_SEGMENT_SIZE = 64 * 1024  # 64 KiB
 
-# TS input options: force mpegts, probe more so variable packet size (188/192/204) still yields streams
-HLS_TS_INPUT_OPTS = '-f mpegts -probesize 10M -analyzeduration 10M -scan_all_pmts 1'
 
-# Standard MPEG-TS packet size (sync 0x47 + 187 bytes). HLS chunks may be 188/192/204 mixed.
-TS_PACKET_SIZE = 188
-
-
-def _normalize_ts_to_188(data):
-    """Extract 188-byte TS packets from data that may have 188/192/204 byte packets. Returns bytes."""
-    if not data or len(data) < TS_PACKET_SIZE:
-        return b''
-    out = []
-    i = 0
-    while i + TS_PACKET_SIZE <= len(data):
-        if data[i] == 0x47:  # sync byte
-            out.append(data[i:i + TS_PACKET_SIZE])
-            # Advance by detected packet size (188, 192, or 204); index must be < len(data)
-            if i + 188 < len(data) and data[i + 188] == 0x47:
-                i += 188
-            elif i + 192 < len(data) and data[i + 192] == 0x47:
-                i += 192
-            elif i + 204 < len(data) and data[i + 204] == 0x47:
-                i += 204
-            else:
-                i += 188
-        else:
-            i += 1
-    return b''.join(out)
-
-
-def _ts_pid(packet):
-    """Return PID of a 188-byte TS packet."""
-    if len(packet) < 3:
-        return -1
-    return ((packet[1] & 0x1F) << 8) | packet[2]
-
-
-def _ensure_pat_pmt_at_start(data):
-    """Reorder TS packets so PAT (PID 0) and PMT appear at the start. FFmpeg needs them to detect streams."""
-    if not data or len(data) < TS_PACKET_SIZE:
-        return data
-    packets = [data[i:i + TS_PACKET_SIZE] for i in range(0, len(data), TS_PACKET_SIZE) if data[i] == 0x47]
-    if not packets:
-        return data
-    pat_packets = [p for p in packets if _ts_pid(p) == 0x0000]
-    if not pat_packets:
-        return data  # no PAT in segment, cannot fix
-    # PMT PID from PAT or default 0x0100
-    pmt_pid = 0x0100
-    for p in pat_packets:
-        if len(p) < 18:
-            continue
-        # payload_start_indicator is in byte 1, bit 6; payload starts at byte 4 when no adaptation
-        if (p[1] & 0x40) == 0:
-            continue
-        ptr = p[4]  # pointer_field is first byte of payload
-        off = 5 + ptr  # PAT section starts after pointer_field
-        if off + 12 <= len(p) and p[off] == 0x00:  # table_id PAT
-            pmt_pid = ((p[off + 10] & 0x1F) << 8) | p[off + 11]
-            break
-    pmt_packets = [p for p in packets if _ts_pid(p) == pmt_pid]
-    pat_pids = {0x0000, pmt_pid}
-    rest = [p for p in packets if _ts_pid(p) not in pat_pids]
-    reordered = pat_packets + pmt_packets + rest
-    return b''.join(reordered) if reordered else data
-
-
-def getVideoNativeHLS(self, url, filename, m3u_processor=None, file_original=None):
-    if file_original is None:
-        file_original = filename
+def getVideoNativeHLS(self, url, filename, m3u_processor=None):
     self.stopDownloadFlag = False
     error = False
     tmpfilename = filename[:-len('.' + CONTAINER)] + '.tmp.ts'
@@ -111,8 +43,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None, file_original=Non
     segment_during_download = segment_size_bytes is not None
     current_file = None
     current_file_size = 0
-    current_original_mp4 = file_original  # desired final name for current segment
-    segment_files = []  # (ts_path, safe_mp4_path, original_mp4_path) for completed segments
+    segment_files = []  # Track all segment files for final conversion
 
     if segment_during_download:
         # Use the initial filename for first segment (but as .ts)
@@ -120,7 +51,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None, file_original=Non
         current_file_size = 0
 
     def execute():
-        nonlocal error, current_file, current_file_size, current_original_mp4, segment_files
+        nonlocal error, current_file, current_file_size, segment_files
         downloaded_list = []
         outfile = [None]  # Use list to allow modification in nested function
         last_success = time.monotonic()
@@ -140,11 +71,8 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None, file_original=Non
                 self.logger.debug('Refresh playlist URL failed: %s', e)
             return False
         
-        def convert_segment_to_mp4(ts_file_path, final_safe_filename, final_original_filename=None):
-            """Convert a .ts segment file to final format (MP4) in background thread; optionally rename to original name."""
-            if final_original_filename is None:
-                final_original_filename = final_safe_filename
-
+        def convert_segment_to_mp4(ts_file_path, final_filename):
+            """Convert a .ts segment file to final format (MP4) in background thread"""
             def convert():
                 try:
                     # Wait a bit to ensure file is fully written and closed
@@ -160,25 +88,12 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None, file_original=Non
                             pass
                         return
                     
-                    stdout = open(final_safe_filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
-                    stderr = open(final_safe_filename + '.postprocess_stderr.log', 'w+') if DEBUG else subprocess.DEVNULL
+                    stdout = open(final_filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
+                    stderr = open(final_filename + '.postprocess_stderr.log', 'w+') if DEBUG else subprocess.DEVNULL
                     output_str = '-c:a copy -c:v copy'
-                    ff = FFmpeg(executable=FFMPEG_PATH, inputs={ts_file_path: HLS_TS_INPUT_OPTS}, outputs={final_safe_filename: output_str})
+                    ff = FFmpeg(executable=FFMPEG_PATH, inputs={ts_file_path: None}, outputs={final_filename: output_str})
                     ff.run(stdout=stdout, stderr=stderr)
                     os.remove(ts_file_path)
-                    # Rename to original filename if different (e.g. special chars / emoji in title)
-                    if final_original_filename != final_safe_filename and os.path.exists(final_safe_filename):
-                        try:
-                            os.rename(final_safe_filename, final_original_filename)
-                            for ext in ('.postprocess_stdout.log', '.postprocess_stderr.log'):
-                                p = final_safe_filename + ext
-                                if os.path.exists(p):
-                                    try:
-                                        os.remove(p)
-                                    except OSError:
-                                        pass
-                        except OSError as e:
-                            self.logger.warning(f'Could not rename to original filename: {e}')
                 except FFRuntimeError as e:
                     if e.exit_code and e.exit_code != 255:
                         self.logger.error(f'Error converting segment: {e}')
@@ -191,7 +106,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None, file_original=Non
             return convert_thread
         
         def get_output_file():
-            nonlocal current_file, current_file_size, current_original_mp4, segment_files
+            nonlocal current_file, current_file_size, segment_files
             if segment_during_download:
                 # Check if we need to start a new segment
                 if current_file_size >= int(segment_size_bytes):
@@ -201,12 +116,13 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None, file_original=Non
                     
                     # Convert the completed segment to MP4 (like pause/resume logic)
                     prev_ts_file = current_file
-                    prev_final_safe = prev_ts_file.replace('.ts', '.' + CONTAINER)
+                    # Generate final filename by replacing .ts with .mp4
+                    prev_final_filename = prev_ts_file.replace('.ts', '.' + CONTAINER)
                     if os.path.exists(prev_ts_file):
                         prev_sz = os.path.getsize(prev_ts_file)
                         if prev_sz >= MIN_SEGMENT_SIZE:
-                            segment_files.append((prev_ts_file, prev_final_safe, current_original_mp4))
-                            convert_segment_to_mp4(prev_ts_file, prev_final_safe, current_original_mp4)
+                            segment_files.append((prev_ts_file, prev_final_filename))
+                            convert_segment_to_mp4(prev_ts_file, prev_final_filename)
                         elif prev_sz > 0:
                             try:
                                 os.remove(prev_ts_file)
@@ -214,13 +130,8 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None, file_original=Non
                                 pass
                     
                     # Generate new filename with timestamp (like pause/resume)
-                    new_result = self.genOutFilename(create_dir=True)
-                    if isinstance(new_result, tuple):
-                        new_safe, new_original = new_result
-                    else:
-                        new_safe = new_original = new_result
-                    current_file = new_safe[:-len('.' + CONTAINER)] + '.ts'
-                    current_original_mp4 = new_original
+                    new_filename = self.genOutFilename(create_dir=True)
+                    current_file = new_filename[:-len('.' + CONTAINER)] + '.ts'
                     current_file_size = 0
                 if outfile[0] is None or outfile[0].closed:
                     outfile[0] = open(current_file, 'ab')
@@ -290,13 +201,10 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None, file_original=Non
                             break
                         return
                     file_handle = get_output_file()
-                    # Normalize to 188-byte TS packets so FFmpeg can detect streams (avoids mixed 188/192/204)
-                    chunk_data = _normalize_ts_to_188(m.content)
-                    if chunk_data:
-                        file_handle.write(chunk_data)
-                        last_success = time.monotonic()
-                        if segment_during_download:
-                            current_file_size += len(chunk_data)
+                    file_handle.write(m.content)
+                    last_success = time.monotonic()
+                    if segment_during_download:
+                        current_file_size += len(m.content)
                     if self.stopDownloadFlag:
                         return
                 if not did_download:
@@ -327,16 +235,15 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None, file_original=Non
         if current_file and os.path.exists(current_file):
             last_sz = os.path.getsize(current_file)
             if last_sz >= MIN_SEGMENT_SIZE:
-                final_safe = current_file.replace('.ts', '.' + CONTAINER)
-                final_original = current_original_mp4
-                stderr_path = final_safe + '.postprocess_stderr.log'
+                final_filename = current_file.replace('.ts', '.' + CONTAINER)
+                stderr_path = final_filename + '.postprocess_stderr.log'
                 stderr_file = None
                 try:
                     # Always write stderr log so it can be inspected when conversion fails (e.g. exit 254)
-                    stdout = open(final_safe + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
+                    stdout = open(final_filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
                     stderr_file = open(stderr_path, 'w+')
                     output_str = '-c:a copy -c:v copy'
-                    ff = FFmpeg(executable=FFMPEG_PATH, inputs={current_file: HLS_TS_INPUT_OPTS}, outputs={final_safe: output_str})
+                    ff = FFmpeg(executable=FFMPEG_PATH, inputs={current_file: None}, outputs={final_filename: output_str})
                     ff.run(stdout=stdout, stderr=stderr_file)
                     stderr_file.close()
                     stderr_file = None
@@ -345,18 +252,6 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None, file_original=Non
                     except OSError:
                         pass
                     os.remove(current_file)
-                    if final_original != final_safe and os.path.exists(final_safe):
-                        try:
-                            os.rename(final_safe, final_original)
-                            for ext in ('.postprocess_stdout.log', '.postprocess_stderr.log'):
-                                p = final_safe + ext
-                                if os.path.exists(p):
-                                    try:
-                                        os.remove(p)
-                                    except OSError:
-                                        pass
-                        except OSError as e:
-                            self.logger.warning(f'Could not rename final segment to original filename: {e}')
                 except FFRuntimeError as e:
                     if stderr_file:
                         try:
@@ -365,57 +260,6 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None, file_original=Non
                             pass
                     if e.exit_code and e.exit_code != 255:
                         self.logger.error(f'Error converting final segment: {e}. Check {stderr_path!r} for ffmpeg stderr.')
-                    # Fallback: normalize TS to 188-byte packets, put PAT/PMT at start, then retry
-                    norm_ts = current_file + '.norm.ts'
-                    fallback_ok = False
-                    try:
-                        with open(current_file, 'rb') as f:
-                            raw = f.read()
-                        norm_data = _normalize_ts_to_188(raw)
-                        if len(norm_data) >= MIN_SEGMENT_SIZE:
-                            # FFmpeg needs PAT/PMT at start to detect streams (segment may start mid-stream on cut)
-                            norm_data = _ensure_pat_pmt_at_start(norm_data)
-                            if len(norm_data) >= MIN_SEGMENT_SIZE:
-                                with open(norm_ts, 'wb') as f:
-                                    f.write(norm_data)
-                                devnull = subprocess.DEVNULL
-                                out_opts = '-c:a copy -c:v copy'
-                                # Try 1: with forced mpegts + probe options
-                                try:
-                                    ff2 = FFmpeg(executable=FFMPEG_PATH, inputs={norm_ts: HLS_TS_INPUT_OPTS}, outputs={final_safe: out_opts})
-                                    ff2.run(stdout=devnull, stderr=devnull)
-                                    fallback_ok = True
-                                except FFRuntimeError:
-                                    # Try 2: no -f mpegts, let FFmpeg auto-detect (can help when content is fMP4 or demuxer is picky)
-                                    try:
-                                        ff3 = FFmpeg(executable=FFMPEG_PATH, inputs={norm_ts: '-probesize 20M -analyzeduration 20M'}, outputs={final_safe: out_opts})
-                                        ff3.run(stdout=devnull, stderr=devnull)
-                                        fallback_ok = True
-                                    except FFRuntimeError:
-                                        pass
-                                if fallback_ok:
-                                    os.remove(norm_ts)
-                                    os.remove(current_file)
-                                    if final_original != final_safe and os.path.exists(final_safe):
-                                        try:
-                                            os.rename(final_safe, final_original)
-                                        except OSError:
-                                            pass
-                                    if os.path.exists(stderr_path):
-                                        try:
-                                            os.remove(stderr_path)
-                                        except OSError:
-                                            pass
-                                    self.logger.info('Final segment converted after normalizing TS (fallback).')
-                    except Exception:
-                        pass
-                    if not fallback_ok:
-                        if os.path.exists(norm_ts):
-                            try:
-                                os.remove(norm_ts)
-                            except OSError:
-                                pass
-                        self.logger.warning(f'TS file kept (conversion failed): {current_file!r}. You can convert it manually.')
                 except Exception as e:
                     if stderr_file:
                         try:
@@ -423,7 +267,6 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None, file_original=Non
                         except OSError:
                             pass
                     self.logger.error(f'Unexpected error converting final segment: {e}. Check {stderr_path!r} for ffmpeg stderr.')
-                    self.logger.warning(f'TS file kept: {current_file!r}. You can convert it manually.')
             else:
                 try:
                     os.remove(current_file)
@@ -449,21 +292,9 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None, file_original=Non
             stdout = open(filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
             stderr = open(filename + '.postprocess_stderr.log', 'w+') if DEBUG else subprocess.DEVNULL
             output_str = '-c:a copy -c:v copy'
-            ff = FFmpeg(executable=FFMPEG_PATH, inputs={tmpfilename: HLS_TS_INPUT_OPTS}, outputs={filename: output_str})
+            ff = FFmpeg(executable=FFMPEG_PATH, inputs={tmpfilename: None}, outputs={filename: output_str})
             ff.run(stdout=stdout, stderr=stderr)
             os.remove(tmpfilename)
-            if file_original != filename and os.path.exists(filename):
-                try:
-                    os.rename(filename, file_original)
-                    for ext in ('.postprocess_stdout.log', '.postprocess_stderr.log'):
-                        p = filename + ext
-                        if os.path.exists(p):
-                            try:
-                                os.remove(p)
-                            except OSError:
-                                pass
-                except OSError as e:
-                    self.logger.warning(f'Could not rename to original filename: {e}')
         except FFRuntimeError as e:
             if e.exit_code and e.exit_code != 255:
                 return False
