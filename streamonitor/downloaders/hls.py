@@ -29,6 +29,9 @@ if not _http_lib:
 # Segments smaller than this are discarded (no real content); avoids ~262B empty/minimal MP4s
 MIN_SEGMENT_SIZE = 64 * 1024  # 64 KiB
 
+# TS input options: force mpegts, probe more so variable packet size (188/192/204) still yields streams
+HLS_TS_INPUT_OPTS = '-f mpegts -probesize 10M -analyzeduration 10M -scan_all_pmts 1'
+
 
 def getVideoNativeHLS(self, url, filename, m3u_processor=None, file_original=None):
     if file_original is None:
@@ -97,7 +100,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None, file_original=Non
                     stdout = open(final_safe_filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
                     stderr = open(final_safe_filename + '.postprocess_stderr.log', 'w+') if DEBUG else subprocess.DEVNULL
                     output_str = '-c:a copy -c:v copy'
-                    ff = FFmpeg(executable=FFMPEG_PATH, inputs={ts_file_path: '-f mpegts'}, outputs={final_safe_filename: output_str})
+                    ff = FFmpeg(executable=FFMPEG_PATH, inputs={ts_file_path: HLS_TS_INPUT_OPTS}, outputs={final_safe_filename: output_str})
                     ff.run(stdout=stdout, stderr=stderr)
                     os.remove(ts_file_path)
                     # Rename to original filename if different (e.g. special chars / emoji in title)
@@ -267,7 +270,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None, file_original=Non
                     stdout = open(final_safe + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
                     stderr_file = open(stderr_path, 'w+')
                     output_str = '-c:a copy -c:v copy'
-                    ff = FFmpeg(executable=FFMPEG_PATH, inputs={current_file: '-f mpegts'}, outputs={final_safe: output_str})
+                    ff = FFmpeg(executable=FFMPEG_PATH, inputs={current_file: HLS_TS_INPUT_OPTS}, outputs={final_safe: output_str})
                     ff.run(stdout=stdout, stderr=stderr_file)
                     stderr_file.close()
                     stderr_file = None
@@ -328,7 +331,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None, file_original=Non
             stdout = open(filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
             stderr = open(filename + '.postprocess_stderr.log', 'w+') if DEBUG else subprocess.DEVNULL
             output_str = '-c:a copy -c:v copy'
-            ff = FFmpeg(executable=FFMPEG_PATH, inputs={tmpfilename: '-f mpegts'}, outputs={filename: output_str})
+            ff = FFmpeg(executable=FFMPEG_PATH, inputs={tmpfilename: HLS_TS_INPUT_OPTS}, outputs={filename: output_str})
             ff.run(stdout=stdout, stderr=stderr)
             os.remove(tmpfilename)
             if file_original != filename and os.path.exists(filename):
