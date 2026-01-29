@@ -191,7 +191,7 @@ class StripChat(RoomIdBot):
             if not topic_original:
                 topic_original = None
 
-            # Heavy sanitize for "safe" filename used during processing (avoids ffmpeg exit 254/183)
+            # Safe filename must be ASCII-only so FFmpeg can open the path reliably (no "Error opening input file")
             invalid_chars = r'[<>:"/\\|?*!\x00-\x1f~～]'
             topic_safe = re.sub(invalid_chars, '_', topic_str)
             topic_safe = ''.join(
@@ -200,11 +200,13 @@ class StripChat(RoomIdBot):
             )
             topic_safe = re.sub(r'\s+', '_', topic_safe)
             topic_safe = re.sub(r'_+', '_', topic_safe).strip(' ._')
-            topic_utf8 = topic_safe.encode('utf-8')
-            if len(topic_utf8) > 80:
-                topic_safe = topic_utf8[:80].decode('utf-8', errors='ignore').strip(' ._')
+            # Keep only ASCII so path passed to FFmpeg never contains non-ASCII (avoids open errors)
+            topic_safe = ''.join(c if ord(c) < 128 else '_' for c in topic_safe)
+            topic_safe = re.sub(r'_+', '_', topic_safe).strip('_')
+            if len(topic_safe) > 80:
+                topic_safe = topic_safe[:80].rstrip('_')
             if not topic_safe:
-                topic_safe = 'topic'  # placeholder when topic is only emoji/symbols
+                topic_safe = 'topic'  # placeholder when topic is only non-ASCII / emoji
 
         # Build safe and original paths; if no topic or same after sanitize, both paths can match
         parts_base = [self.site, self.username, timestamp]

@@ -97,7 +97,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None, file_original=Non
                     stdout = open(final_safe_filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
                     stderr = open(final_safe_filename + '.postprocess_stderr.log', 'w+') if DEBUG else subprocess.DEVNULL
                     output_str = '-c:a copy -c:v copy'
-                    ff = FFmpeg(executable=FFMPEG_PATH, inputs={ts_file_path: None}, outputs={final_safe_filename: output_str})
+                    ff = FFmpeg(executable=FFMPEG_PATH, inputs={ts_file_path: '-f mpegts'}, outputs={final_safe_filename: output_str})
                     ff.run(stdout=stdout, stderr=stderr)
                     os.remove(ts_file_path)
                     # Rename to original filename if different (e.g. special chars / emoji in title)
@@ -267,7 +267,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None, file_original=Non
                     stdout = open(final_safe + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
                     stderr_file = open(stderr_path, 'w+')
                     output_str = '-c:a copy -c:v copy'
-                    ff = FFmpeg(executable=FFMPEG_PATH, inputs={current_file: None}, outputs={final_safe: output_str})
+                    ff = FFmpeg(executable=FFMPEG_PATH, inputs={current_file: '-f mpegts'}, outputs={final_safe: output_str})
                     ff.run(stdout=stdout, stderr=stderr_file)
                     stderr_file.close()
                     stderr_file = None
@@ -328,7 +328,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None, file_original=Non
             stdout = open(filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
             stderr = open(filename + '.postprocess_stderr.log', 'w+') if DEBUG else subprocess.DEVNULL
             output_str = '-c:a copy -c:v copy'
-            ff = FFmpeg(executable=FFMPEG_PATH, inputs={tmpfilename: None}, outputs={filename: output_str})
+            ff = FFmpeg(executable=FFMPEG_PATH, inputs={tmpfilename: '-f mpegts'}, outputs={filename: output_str})
             ff.run(stdout=stdout, stderr=stderr)
             os.remove(tmpfilename)
             if file_original != filename and os.path.exists(filename):
