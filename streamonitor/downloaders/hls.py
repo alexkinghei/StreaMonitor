@@ -330,6 +330,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None, file_original=Non
                         self.logger.error(f'Error converting final segment: {e}. Check {stderr_path!r} for ffmpeg stderr.')
                     # Fallback: normalize TS to 188-byte packets and retry (helps mixed 188/192/204 from manual cut)
                     norm_ts = current_file + '.norm.ts'
+                    fallback_ok = False
                     try:
                         with open(current_file, 'rb') as f:
                             raw = f.read()
@@ -337,24 +338,38 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None, file_original=Non
                         if len(norm_data) >= MIN_SEGMENT_SIZE:
                             with open(norm_ts, 'wb') as f:
                                 f.write(norm_data)
-                            stdout = subprocess.DEVNULL
-                            stderr = subprocess.DEVNULL
-                            ff2 = FFmpeg(executable=FFMPEG_PATH, inputs={norm_ts: HLS_TS_INPUT_OPTS}, outputs={final_safe: '-c:a copy -c:v copy'})
-                            ff2.run(stdout=stdout, stderr=stderr)
-                            os.remove(norm_ts)
-                            os.remove(current_file)
-                            if final_original != final_safe and os.path.exists(final_safe):
+                            devnull = subprocess.DEVNULL
+                            out_opts = '-c:a copy -c:v copy'
+                            # Try 1: with forced mpegts + probe options
+                            try:
+                                ff2 = FFmpeg(executable=FFMPEG_PATH, inputs={norm_ts: HLS_TS_INPUT_OPTS}, outputs={final_safe: out_opts})
+                                ff2.run(stdout=devnull, stderr=devnull)
+                                fallback_ok = True
+                            except FFRuntimeError:
+                                # Try 2: no -f mpegts, let FFmpeg auto-detect (can help when content is fMP4 or demuxer is picky)
                                 try:
-                                    os.rename(final_safe, final_original)
-                                except OSError:
+                                    ff3 = FFmpeg(executable=FFMPEG_PATH, inputs={norm_ts: '-probesize 20M -analyzeduration 20M'}, outputs={final_safe: out_opts})
+                                    ff3.run(stdout=devnull, stderr=devnull)
+                                    fallback_ok = True
+                                except FFRuntimeError:
                                     pass
-                            if os.path.exists(stderr_path):
-                                try:
-                                    os.remove(stderr_path)
-                                except OSError:
-                                    pass
-                            self.logger.info('Final segment converted after normalizing TS packet size.')
+                            if fallback_ok:
+                                os.remove(norm_ts)
+                                os.remove(current_file)
+                                if final_original != final_safe and os.path.exists(final_safe):
+                                    try:
+                                        os.rename(final_safe, final_original)
+                                    except OSError:
+                                        pass
+                                if os.path.exists(stderr_path):
+                                    try:
+                                        os.remove(stderr_path)
+                                    except OSError:
+                                        pass
+                                self.logger.info('Final segment converted after normalizing TS (fallback).')
                     except Exception:
+                        pass
+                    if not fallback_ok:
                         if os.path.exists(norm_ts):
                             try:
                                 os.remove(norm_ts)
