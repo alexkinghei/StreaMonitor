@@ -59,9 +59,9 @@ SEGMENT_SIZE = env.str("STRMNTR_SEGMENT_SIZE", None)
 # HLS resiliency:
 # Allow short transient failures (timeouts / brief disconnects) without ending the recording.
 # If no successful chunk is written for this many seconds, the HLS recording will stop with error.
-HLS_TRANSIENT_GRACE_SECONDS = env.int("STRMNTR_HLS_GRACE_SECONDS", 30)
+HLS_TRANSIENT_GRACE_SECONDS = env.int("STRMNTR_HLS_GRACE_SECONDS", 90)
 # Sleep between retries during transient failures.
-HLS_RETRY_SLEEP_SECONDS = env.float("STRMNTR_HLS_RETRY_SLEEP", 2.0)
+HLS_RETRY_SLEEP_SECONDS = env.float("STRMNTR_HLS_RETRY_SLEEP", 4.0)
 
 
 def parse_segment_size(size_str):
