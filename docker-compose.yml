@@ -36,7 +36,7 @@ services:
       # Set segment size for video splitting (in bytes or with units: K, M, G)
       # Example: "838860800" (800 MB in bytes), "800M" (800 MB), "1G" (1 GB)
       # If not set, videos will be downloaded as a single file
-      STRMNTR_SEGMENT_SIZE: "800M"
+      STRMNTR_SEGMENT_SIZE: "1.8G"
       # HLS resiliency: tolerate short transient disconnects without splitting into many short files
       # During this grace window, playlist/chunk failures will be retried instead of ending the recording.
       STRMNTR_HLS_GRACE_SECONDS: "80"
