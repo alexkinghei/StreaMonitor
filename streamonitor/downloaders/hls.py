@@ -289,6 +289,8 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                         return
                     # Reject incomplete chunk (e.g. stream ended mid-transfer / private show) so we don't
                     # write a truncated fMP4 fragment and corrupt the file (ffmpeg "error reading header").
+                    # In segment mode: close this segment immediately so we never write a "gap" in the middle
+                    # (which would produce a large file where only the part before the gap is playable).
                     content_length = m.headers.get('Content-Length')
                     if content_length is not None:
                         try:
@@ -296,9 +298,12 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                             if len(m.content) != expected:
                                 downloaded_list.pop()
                                 self.logger.warning(
-                                    'HLS chunk incomplete (got %s bytes, expected %s); skipping to avoid corrupt file',
+                                    'HLS chunk incomplete (got %s bytes, expected %s); closing segment to keep file valid',
                                     len(m.content), expected
                                 )
+                                if segment_during_download:
+                                    # Don't write more to this file — return so we close and convert a valid segment.
+                                    return
                                 if within_grace():
                                     sleep(float(HLS_RETRY_SLEEP_SECONDS))
                                 break
