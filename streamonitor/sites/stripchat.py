@@ -171,13 +171,25 @@ class StripChat(RoomIdBot):
         
         # Safe path only: no topic in filename (avoids FFmpeg/path issues with Chinese, !, emoji)
         base = '-'.join([self.site, self.username, timestamp])
-        filename = os.path.join(folder, base + '.' + CONTAINER)
+
+        # Avoid rare same-millisecond collisions that could make a new write append into an old .ts.
+        unique_base = base
+        suffix = 1
+        while (
+            os.path.exists(os.path.join(folder, unique_base + '.' + CONTAINER)) or
+            os.path.exists(os.path.join(folder, unique_base + '.ts')) or
+            os.path.exists(os.path.join(folder, unique_base + '.tmp.ts')) or
+            os.path.exists(os.path.join(folder, unique_base + '.title.txt'))
+        ):
+            unique_base = f'{base}-{suffix}'
+            suffix += 1
+        filename = os.path.join(folder, unique_base + '.' + CONTAINER)
         
         # Store original title from live site as-is (no _ or other replacement); used for final rename after conversion
         topic = None
         if hasattr(self, 'lastInfo') and self.lastInfo:
             topic = self.lastInfo.get('topic')
-        title_path = os.path.join(folder, base + '.title.txt')
+        title_path = os.path.join(folder, unique_base + '.title.txt')
         try:
             with open(title_path, 'w', encoding='utf-8') as f:
                 f.write('' if topic is None else str(topic))

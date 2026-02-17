@@ -105,16 +105,21 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
 
     def execute():
         nonlocal error, current_file, current_file_size, segment_files, segment_convert_threads
-        downloaded_list = []
+        downloaded_set = set()
         outfile = [None]  # Use list to allow modification in nested function
         last_success = time.monotonic()
         # fMP4 streams: cache init segment (ftyp+moov) so we can prepend it to each new file after rotation.
         # Without this, post-rotation segments would be raw moof+mdat only and ffmpeg would fail (track id/trex errors).
         init_segment_bytes = [b'']
+        current_file_has_init = [False]
         just_rotated = [False]  # True only after 800MB rotation so we prepend init only to new segment files
 
         def within_grace():
             return (time.monotonic() - last_success) <= float(HLS_TRANSIENT_GRACE_SECONDS)
+
+        def init_chunk_key(uri: str) -> str:
+            # Strip query/fragment so rotating auth tokens don't make the same init look "new".
+            return uri.split('?', 1)[0].split('#', 1)[0]
 
         def try_refresh_url():
             """On bitrate/playlist change, get fresh playlist URL and continue same recording."""
@@ -209,13 +214,16 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                     new_filename = self.genOutFilename(create_dir=True)
                     current_file = new_filename[:-len('.' + CONTAINER)] + '.ts'
                     current_file_size = 0
+                    current_file_has_init[0] = False
                     just_rotated[0] = True
                 if outfile[0] is None or outfile[0].closed:
-                    outfile[0] = open(current_file, 'ab')
+                    # Use wb so a rare filename collision never appends stale bytes from an older file.
+                    outfile[0] = open(current_file, 'wb')
                     # fMP4: prepend init segment only after rotation (first file gets init from the loop)
                     if init_segment_bytes[0] and just_rotated[0]:
                         outfile[0].write(init_segment_bytes[0])
                         current_file_size += len(init_segment_bytes[0])
+                        current_file_has_init[0] = True
                         just_rotated[0] = False
                 return outfile[0]
             else:
@@ -256,11 +264,16 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                 init_list = _sm if isinstance(_sm, list) else ([_sm] if _sm else [])
                 combined = init_list + list(chunklist.segments)
                 n_init = len(init_list)
+                playlist_init_parts = [None] * n_init if segment_during_download and n_init > 0 else None
                 for i, chunk in enumerate(combined):
-                    if chunk.uri in downloaded_list:
+                    is_init_chunk = i < n_init
+                    chunk_key = init_chunk_key(chunk.uri) if is_init_chunk else chunk.uri
+                    if chunk_key in downloaded_set and (not is_init_chunk or current_file_has_init[0]):
                         continue
                     did_download = True
-                    downloaded_list.append(chunk.uri)
+                    chunk_key_was_new = chunk_key not in downloaded_set
+                    if chunk_key_was_new:
+                        downloaded_set.add(chunk_key)
                     chunk_uri = chunk.uri
                     self.debug('Downloading ' + chunk_uri)
                     if not chunk_uri.startswith("https://"):
@@ -269,7 +282,8 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                         m = session.get(chunk_uri, headers=self.headers, cookies=self.cookies, timeout=30)
                     except Exception as e:
                         if within_grace():
-                            downloaded_list.pop()  # retry this chunk next time
+                            if chunk_key_was_new:
+                                downloaded_set.discard(chunk_key)
                             if try_refresh_url():
                                 break
                             self.logger.warning('HLS chunk fetch failed (transient, retrying): %s', e)
@@ -280,7 +294,8 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                         return
                     if m.status_code != 200:
                         if within_grace():
-                            downloaded_list.pop()
+                            if chunk_key_was_new:
+                                downloaded_set.discard(chunk_key)
                             if try_refresh_url():
                                 break
                             self.logger.warning('HLS chunk status %s (transient, retrying)', m.status_code)
@@ -296,7 +311,8 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                         try:
                             expected = int(content_length)
                             if len(m.content) != expected:
-                                downloaded_list.pop()
+                                if chunk_key_was_new:
+                                    downloaded_set.discard(chunk_key)
                                 self.logger.warning(
                                     'HLS chunk incomplete (got %s bytes, expected %s); closing segment to keep file valid',
                                     len(m.content), expected
@@ -309,9 +325,28 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                                 break
                         except (ValueError, TypeError):
                             pass
-                    # Cache fMP4 init segment so we can prepend it to each new file after 800MB rotation
-                    if segment_during_download and i < n_init:
-                        init_segment_bytes[0] += m.content
+                    # fMP4 init chunks:
+                    # - keep only the latest init bytes (don't append forever)
+                    # - write init only once per output file to avoid duplicate moov atoms
+                    if segment_during_download and is_init_chunk:
+                        if playlist_init_parts is not None:
+                            playlist_init_parts[i] = m.content
+                            if all(part is not None for part in playlist_init_parts):
+                                init_segment_bytes[0] = b''.join(playlist_init_parts)
+                        if current_file_has_init[0]:
+                            last_success = time.monotonic()
+                            if self.stopDownloadFlag:
+                                return
+                            continue
+                        file_handle = get_output_file()
+                        file_handle.write(m.content)
+                        last_success = time.monotonic()
+                        current_file_size += len(m.content)
+                        if (i + 1) >= n_init:
+                            current_file_has_init[0] = True
+                        if self.stopDownloadFlag:
+                            return
+                        continue
                     file_handle = get_output_file()
                     file_handle.write(m.content)
                     last_success = time.monotonic()

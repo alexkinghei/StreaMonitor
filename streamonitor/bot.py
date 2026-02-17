@@ -225,6 +225,33 @@ class Bot(Thread):
                     return candidate
                 i += 1
 
+        def remux_ts_to_mp4(input_ts_path: str, output_mp4_path: str) -> bool:
+            # Pass 1: normal stream copy remux.
+            # Pass 2: tolerate minor corruption to recover as much as possible.
+            commands = [
+                [FFMPEG_PATH, "-y", "-i", input_ts_path, "-c", "copy", output_mp4_path],
+                [
+                    FFMPEG_PATH, "-y",
+                    "-err_detect", "ignore_err",
+                    "-fflags", "+discardcorrupt+genpts",
+                    "-i", input_ts_path,
+                    "-c", "copy",
+                    output_mp4_path,
+                ],
+            ]
+            for cmd in commands:
+                try:
+                    subprocess.run(
+                        cmd,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        check=True,
+                    )
+                    return True
+                except Exception:
+                    continue
+            return False
+
         # Pass 1: delete old postprocess logs (user requested no logs)
         for entry in os.scandir(folder):
             if not entry.is_file():
@@ -287,14 +314,9 @@ class Bot(Thread):
             mp4_path = unique_mp4_path(os.path.splitext(ts_path)[0] + ".mp4")
 
             try:
-                # Remux (copy A/V) into MP4 container; suppress all output.
-                # If it fails (damaged file), delete the ts.
-                subprocess.run(
-                    [FFMPEG_PATH, "-y", "-i", ts_path, "-c", "copy", mp4_path],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=True,
-                )
+                # Remux (copy A/V) into MP4 container; if strict remux fails, try tolerant remux once.
+                if not remux_ts_to_mp4(ts_path, mp4_path):
+                    raise RuntimeError("ffmpeg remux failed")
                 # Keep the converted file's mtime in sync with the original ts.
                 try:
                     os.utime(mp4_path, (ts_stat.st_atime, ts_stat.st_mtime))
