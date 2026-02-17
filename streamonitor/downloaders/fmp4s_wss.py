@@ -1,11 +1,15 @@
 import json
 import os
 import subprocess
+import time
 from threading import Thread
-from websocket import create_connection, WebSocketConnectionClosedException, WebSocketException
+from websocket import create_connection, WebSocketConnectionClosedException, WebSocketException, WebSocketTimeoutException
 from contextlib import closing
 from ffmpy import FFmpeg, FFRuntimeError
-from parameters import DEBUG, CONTAINER, SEGMENT_SIZE, parse_segment_size, FFMPEG_PATH
+from parameters import (
+    DEBUG, CONTAINER, SEGMENT_SIZE, parse_segment_size, FFMPEG_PATH,
+    HLS_TRANSIENT_GRACE_SECONDS, HLS_RETRY_SLEEP_SECONDS,
+)
 
 
 def getVideoWSSVR(self, url, filename):
@@ -24,12 +28,26 @@ def getVideoWSSVR(self, url, filename):
     def debug_(message):
         self.debug(message, filename + '.log')
 
+    last_success = [time.monotonic()]
+
+    def within_grace():
+        return (time.monotonic() - last_success[0]) <= float(HLS_TRANSIENT_GRACE_SECONDS)
+
     def execute():
         nonlocal error
         with open(tmpfilename, 'wb') as outfile:
             while not self.stopDownloadFlag:
+                if not within_grace():
+                    debug_('WSS download exceeded transient grace window; stopping')
+                    error = True
+                    try:
+                        outfile.flush()
+                    except (OSError, ValueError):
+                        pass
+                    return
                 try:
                     with closing(create_connection(url, timeout=10)) as conn:
+                        conn.settimeout(10)
                         conn.send('{"url":"stream/hello","version":"0.0.1"}')
                         while not self.stopDownloadFlag:
                             t = conn.recv()
@@ -59,9 +77,24 @@ def getVideoWSSVR(self, url, filename):
                                 return
 
                         while not self.stopDownloadFlag:
-                            outfile.write(conn.recv())
+                            payload = conn.recv()
+                            if payload:
+                                outfile.write(payload)
+                                last_success[0] = time.monotonic()
                 except WebSocketConnectionClosedException:
                     debug_('WebSocket connection closed - try to continue')
+                    time.sleep(float(HLS_RETRY_SLEEP_SECONDS))
+                    continue
+                except WebSocketTimeoutException:
+                    if within_grace():
+                        time.sleep(float(HLS_RETRY_SLEEP_SECONDS))
+                        continue
+                    debug_('WebSocket timed out beyond grace window')
+                    error = True
+                    try:
+                        outfile.flush()
+                    except (OSError, ValueError):
+                        pass
                     continue
                 except WebSocketException as wex:
                     debug_('Error when downloading')
@@ -85,6 +118,9 @@ def getVideoWSSVR(self, url, filename):
     if error:
         return False
 
+    if not os.path.exists(tmpfilename) or os.path.getsize(tmpfilename) == 0:
+        return False
+
     # Post-processing
     try:
         stdout = open(filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
@@ -98,7 +134,30 @@ def getVideoWSSVR(self, url, filename):
         ff.run(stdout=stdout, stderr=stderr)
         os.remove(tmpfilename)
     except FFRuntimeError as e:
-        if e.exit_code and e.exit_code != 255:
+        try:
+            if os.path.exists(filename):
+                os.remove(filename)
+        except OSError:
+            pass
+        try:
+            subprocess.run(
+                [
+                    FFMPEG_PATH, '-y',
+                    '-err_detect', 'ignore_err',
+                    '-fflags', '+discardcorrupt+genpts',
+                    '-i', tmpfilename,
+                    '-c:a', 'copy',
+                    '-c:v', 'copy',
+                    filename,
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=True,
+            )
+            os.remove(tmpfilename)
+        except Exception:
+            if e.exit_code:
+                self.logger.error('WSS final remux failed (exit_code=%s)', e.exit_code)
             return False
 
     return True

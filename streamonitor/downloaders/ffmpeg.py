@@ -50,9 +50,8 @@ def getVideoFfmpeg(self, url, filename):
 
     segment_size_bytes = parse_segment_size(SEGMENT_SIZE)
     if segment_size_bytes is not None:
-        username = filename.rsplit('-', maxsplit=2)[0]
-        # Build output filename pattern
-        output_pattern = f'{username}-%Y%m%d-%H%M%S{suffix}.{CONTAINER}'
+        # Build output filename pattern from the full base path to avoid fragile timestamp parsing.
+        output_pattern = f'{os.path.splitext(filename)[0]}-%Y%m%d-%H%M%S{suffix}.{CONTAINER}'
         
         # For MP4 format, we need to use movflags for proper real-time segmentation
         if CONTAINER == 'mp4':

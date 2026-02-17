@@ -27,10 +27,6 @@ if not _http_lib:
 if not _http_lib:
     raise ImportError("Please install requests or pycurl package to proceed")
 
-# Segments smaller than this are discarded (no real content); avoids ~262B empty/minimal MP4s
-MIN_SEGMENT_SIZE = 64 * 1024  # 64 KiB
-
-
 def _rename_mp4_by_title(mp4_path, logger=None):
     """If base.title.txt exists with non-empty title, rename mp4 to base-title.mp4 and remove .title.txt."""
     if not mp4_path or not mp4_path.endswith('.' + CONTAINER):
@@ -97,6 +93,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
     current_file_size = 0
     segment_files = []  # Track all segment files for final conversion
     segment_convert_threads = []  # Background conversion threads to join before return
+    successful_outputs = [0]
 
     if segment_during_download:
         # Use the initial filename for first segment (but as .ts)
@@ -136,6 +133,8 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
         def convert_segment_to_mp4(ts_file_path, final_filename):
             """Convert a .ts segment file to final format (MP4) in background thread"""
             def convert():
+                stderr_path = final_filename + '.postprocess_stderr.log'
+                stderr_file = None
                 try:
                     # Wait a bit to ensure file is fully written and closed (fsync in main thread helps)
                     sleep(0.5)
@@ -143,7 +142,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                     if not os.path.exists(ts_file_path):
                         return
                     sz = os.path.getsize(ts_file_path)
-                    if sz == 0 or sz < MIN_SEGMENT_SIZE:
+                    if sz == 0:
                         try:
                             os.remove(ts_file_path)
                         except OSError:
@@ -151,16 +150,63 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                         return
                     
                     stdout = open(final_filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
-                    stderr = open(final_filename + '.postprocess_stderr.log', 'w+') if DEBUG else subprocess.DEVNULL
+                    stderr_file = open(stderr_path, 'w+')
                     output_str = '-c:a copy -c:v copy'
                     ff = FFmpeg(executable=FFMPEG_PATH, inputs={ts_file_path: None}, outputs={final_filename: output_str})
-                    ff.run(stdout=stdout, stderr=stderr)
+                    ff.run(stdout=stdout, stderr=stderr_file)
+                    stderr_file.close()
+                    stderr_file = None
+                    try:
+                        os.remove(stderr_path)
+                    except OSError:
+                        pass
                     os.remove(ts_file_path)
                     _rename_mp4_by_title(final_filename, self.logger)
+                    successful_outputs[0] += 1
                 except FFRuntimeError as e:
+                    if stderr_file:
+                        try:
+                            stderr_file.close()
+                        except OSError:
+                            pass
+                    try:
+                        if os.path.exists(final_filename):
+                            os.remove(final_filename)
+                    except OSError:
+                        pass
+                    # Retry once with corruption-tolerant demux flags to salvage partial segments.
+                    try:
+                        with open(stderr_path, 'a+') as fallback_stderr:
+                            subprocess.run(
+                                [
+                                    FFMPEG_PATH, '-y',
+                                    '-err_detect', 'ignore_err',
+                                    '-fflags', '+discardcorrupt+genpts',
+                                    '-i', ts_file_path,
+                                    '-c:a', 'copy',
+                                    '-c:v', 'copy',
+                                    final_filename,
+                                ],
+                                stdout=subprocess.DEVNULL,
+                                stderr=fallback_stderr,
+                                check=True,
+                            )
+                        try:
+                            os.remove(stderr_path)
+                        except OSError:
+                            pass
+                        os.remove(ts_file_path)
+                        _rename_mp4_by_title(final_filename, self.logger)
+                        successful_outputs[0] += 1
+                        return
+                    except Exception:
+                        pass
                     # Log all non-zero exit codes (255 was previously ignored and caused silent failures)
                     if e.exit_code:
-                        self.logger.error(f'Error converting segment (exit_code=%s): %s', e.exit_code, e)
+                        self.logger.error(
+                            'Error converting segment (exit_code=%s): %s. Check %r for ffmpeg stderr.',
+                            e.exit_code, e, stderr_path
+                        )
                     # Remove partial/corrupt mp4 if ffmpeg left one
                     try:
                         if os.path.exists(final_filename):
@@ -168,7 +214,12 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                     except OSError:
                         pass
                 except Exception as e:
-                    self.logger.error(f'Unexpected error converting segment: {e}')
+                    if stderr_file:
+                        try:
+                            stderr_file.close()
+                        except OSError:
+                            pass
+                    self.logger.error(f'Unexpected error converting segment: {e}. Check {stderr_path!r} for ffmpeg stderr.')
                     try:
                         if os.path.exists(final_filename):
                             os.remove(final_filename)
@@ -199,12 +250,12 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                     prev_final_filename = prev_ts_file.replace('.ts', '.' + CONTAINER)
                     if os.path.exists(prev_ts_file):
                         prev_sz = os.path.getsize(prev_ts_file)
-                        if prev_sz >= MIN_SEGMENT_SIZE:
+                        if prev_sz > 0:
                             segment_files.append((prev_ts_file, prev_final_filename))
                             t = convert_segment_to_mp4(prev_ts_file, prev_final_filename)
                             if t is not None:
                                 segment_convert_threads.append(t)
-                        elif prev_sz > 0:
+                        else:
                             try:
                                 os.remove(prev_ts_file)
                             except OSError:
@@ -232,8 +283,8 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                 return outfile[0]
         
         try:
-            did_download = False
             while not self.stopDownloadFlag:
+                did_download = False
                 try:
                     r = session.get(url_ref[0], headers=self.headers, cookies=self.cookies, timeout=30)
                 except Exception as e:
@@ -389,7 +440,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
         # Convert the last segment that might still be in .ts format (success or error path)
         if current_file and os.path.exists(current_file):
             last_sz = os.path.getsize(current_file)
-            if last_sz >= MIN_SEGMENT_SIZE:
+            if last_sz > 0:
                 final_filename = current_file.replace('.ts', '.' + CONTAINER)
                 stderr_path = final_filename + '.postprocess_stderr.log'
                 stderr_file = None
@@ -408,19 +459,48 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                         pass
                     os.remove(current_file)
                     _rename_mp4_by_title(final_filename, self.logger)
+                    successful_outputs[0] += 1
                 except FFRuntimeError as e:
                     if stderr_file:
                         try:
                             stderr_file.close()
                         except OSError:
                             pass
-                    if e.exit_code:
-                        self.logger.error(f'Error converting final segment (exit_code=%s): %s. Check {stderr_path!r} for ffmpeg stderr.', e.exit_code, e)
                     try:
                         if os.path.exists(final_filename):
                             os.remove(final_filename)
                     except OSError:
                         pass
+                    # Retry once with corruption-tolerant demux flags to salvage partial final segment.
+                    recovered = False
+                    try:
+                        with open(stderr_path, 'a+') as fallback_stderr:
+                            subprocess.run(
+                                [
+                                    FFMPEG_PATH, '-y',
+                                    '-err_detect', 'ignore_err',
+                                    '-fflags', '+discardcorrupt+genpts',
+                                    '-i', current_file,
+                                    '-c:a', 'copy',
+                                    '-c:v', 'copy',
+                                    final_filename,
+                                ],
+                                stdout=subprocess.DEVNULL,
+                                stderr=fallback_stderr,
+                                check=True,
+                            )
+                        try:
+                            os.remove(stderr_path)
+                        except OSError:
+                            pass
+                        os.remove(current_file)
+                        _rename_mp4_by_title(final_filename, self.logger)
+                        successful_outputs[0] += 1
+                        recovered = True
+                    except Exception:
+                        pass
+                    if (not recovered) and e.exit_code:
+                        self.logger.error(f'Error converting final segment (exit_code=%s): %s. Check {stderr_path!r} for ffmpeg stderr.', e.exit_code, e)
                 except Exception as e:
                     if stderr_file:
                         try:
@@ -441,8 +521,8 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
         
         if error:
             return False
-        # Check if at least one segment was created
-        return current_file is not None
+        # Report success only if at least one final output file was created.
+        return successful_outputs[0] > 0
     elif error:
         return False
     else:
@@ -463,7 +543,31 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
             os.remove(tmpfilename)
             _rename_mp4_by_title(filename, self.logger)
         except FFRuntimeError as e:
-            if e.exit_code and e.exit_code != 255:
+            try:
+                if os.path.exists(filename):
+                    os.remove(filename)
+            except OSError:
+                pass
+            try:
+                subprocess.run(
+                    [
+                        FFMPEG_PATH, '-y',
+                        '-err_detect', 'ignore_err',
+                        '-fflags', '+discardcorrupt+genpts',
+                        '-i', tmpfilename,
+                        '-c:a', 'copy',
+                        '-c:v', 'copy',
+                        filename,
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=True,
+                )
+                os.remove(tmpfilename)
+                _rename_mp4_by_title(filename, self.logger)
+            except Exception:
+                if e.exit_code:
+                    self.logger.error('Final remux failed (exit_code=%s)', e.exit_code)
                 return False
 
     return True

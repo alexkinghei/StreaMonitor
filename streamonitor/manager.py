@@ -143,7 +143,7 @@ class Manager(Thread):
     def do_convert_ts(self, streamer, username, site):
         """
         Convert leftover .ts files to .mp4 in the streamer's output folder.
-        Damaged .ts files are deleted. No postprocess log files are created.
+        Failed conversions keep source .ts for manual recovery. No postprocess log files are created.
         """
         if not streamer:
             return "Streamer not found"

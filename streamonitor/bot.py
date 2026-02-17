@@ -194,11 +194,13 @@ class Bot(Thread):
     def convert_residual_ts_to_mp4(self):
         """
         Convert leftover .ts files (and remove them) in the streamer's output folder.
-        - Successful remux: .ts -> .mp4 (copy streams) and delete the .ts
-        - Broken/invalid .ts: delete the .ts
-        - .tmp.ts: always delete
+        - Successful remux: .ts/.tmp.ts -> .mp4 (copy streams) and delete the source .ts
+        - Failed remux: keep source .ts for manual recovery (do not delete user data)
         No postprocess stderr/stdout log files are created.
         """
+        if self.recording or self.stopDownload:
+            return "Recording active, skipped for safety"
+
         folder = self.outputFolder
         if not os.path.isdir(folder):
             return "No folder"
@@ -304,14 +306,10 @@ class Bot(Thread):
                 skipped += 1
                 continue
             if name_lower.endswith(".tmp.ts"):
-                try:
-                    os.remove(ts_path)
-                    deleted += 1
-                except OSError:
-                    pass
-                continue
-
-            mp4_path = unique_mp4_path(os.path.splitext(ts_path)[0] + ".mp4")
+                base_mp4 = ts_path[:-len(".tmp.ts")] + ".mp4"
+            else:
+                base_mp4 = os.path.splitext(ts_path)[0] + ".mp4"
+            mp4_path = unique_mp4_path(base_mp4)
 
             try:
                 # Remux (copy A/V) into MP4 container; if strict remux fails, try tolerant remux once.
@@ -328,18 +326,13 @@ class Bot(Thread):
                     pass
                 converted += 1
             except Exception:
-                # Treat as damaged/unreadable; remove the ts and any partial mp4.
+                # Keep source .ts on failure to avoid silent data loss.
                 try:
                     if os.path.exists(mp4_path):
                         os.remove(mp4_path)
                 except OSError:
                     pass
-                try:
-                    os.remove(ts_path)
-                    deleted += 1
-                except OSError:
-                    pass
-                    skipped += 1
+                skipped += 1
 
         # Update file cache so UI can reflect changes if it refreshes.
         try:
@@ -403,6 +396,10 @@ class Bot(Thread):
                             if not ret:
                                 self.sc = Status.ERROR
                                 self.recording = False
+                                try:
+                                    self.cache_file_list()
+                                except Exception:
+                                    pass
                                 self.log(self.status())
                                 self._sleep(self.sleep_on_error)
                                 continue
@@ -551,8 +548,21 @@ class Bot(Thread):
         folder = self.outputFolder
         if create_dir:
             os.makedirs(folder, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        filename = os.path.join(folder, f'{self.username}-{timestamp}.{CONTAINER}')
+        now = datetime.now()
+        timestamp = now.strftime("%Y%m%d-%H%M%S")
+        milliseconds = now.microsecond // 1000
+        base = f'{self.username}-{timestamp}-{milliseconds:03d}'
+        unique_base = base
+        suffix = 1
+        while (
+            os.path.exists(os.path.join(folder, unique_base + '.' + CONTAINER)) or
+            os.path.exists(os.path.join(folder, unique_base + '.ts')) or
+            os.path.exists(os.path.join(folder, unique_base + '.tmp.ts')) or
+            os.path.exists(os.path.join(folder, unique_base + '.tmp.mp4'))
+        ):
+            unique_base = f'{base}-{suffix}'
+            suffix += 1
+        filename = os.path.join(folder, unique_base + '.' + CONTAINER)
         return filename
 
     @classmethod

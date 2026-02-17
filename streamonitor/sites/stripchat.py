@@ -328,20 +328,33 @@ class StripChat(RoomIdBot):
             if streamer.room_id:
                 model_ids[streamer.room_id] = streamer
 
-        base_url = 'https://stripchat.com/api/front/models/list?'
+        if not model_ids:
+            return
+
+        base_url = 'https://stripchat.com/api/front/models/list'
         batch_num = 100
         data_map = {}
         model_id_list = list(model_ids)
+        session = requests.Session()
+        session.headers.update(cls.headers)
         for _batch_ids in [model_id_list[i:i+batch_num] for i in range(0, len(model_id_list), batch_num)]:
-            session = requests.Session()
-            session.headers.update(cls.headers)
-            r = session.get(base_url + '&'.join(f'modelIds[]={model_id}' for model_id in _batch_ids), timeout=10)
-
+            try:
+                r = session.get(
+                    base_url,
+                    params=[('modelIds[]', model_id) for model_id in _batch_ids],
+                    timeout=10
+                )
+            except requests.exceptions.RequestException as e:
+                print(f'[SC] Bulk status request failed for batch(size={len(_batch_ids)}): {e}')
+                continue
+            if r.status_code != 200:
+                print(f'[SC] Bulk status request returned HTTP {r.status_code} for batch(size={len(_batch_ids)})')
+                continue
             try:
                 data = r.json()
-            except requests.exceptions.JSONDecodeError:
-                print('Failed to parse JSON response')
-                return
+            except ValueError:
+                print(f'[SC] Failed to parse bulk status JSON for batch(size={len(_batch_ids)})')
+                continue
             data_map |= {str(model['id']): model for model in data.get('models', [])}
 
         for model_id, streamer in model_ids.items():
