@@ -90,6 +90,82 @@ You can access the web interface on port 5000.
 If set password in parameters.py username is admin, password admin, empty password is also allowed.
 When you set the WEBSERVER_HOST it is also accesible to from other computers in the network
 
+#### External API (Add streamer)
+
+Endpoint:
+`POST /api/streamers`
+
+Access scope:
+- Only localhost requests are allowed (`127.0.0.1` / `::1`)
+- Non-localhost requests return `403 Forbidden`
+
+Auth:
+- HTTP Basic Auth
+- username: `admin`
+- password: value of `WEBSERVER_PASSWORD` in `parameters.py`
+- If `WEBSERVER_PASSWORD` is empty, auth is not required.
+
+Request headers:
+- `Content-Type: application/json`
+- `Authorization: Basic <base64(admin:password)>` (if password is enabled)
+
+Request body:
+```json
+{
+  "username": "streamer_name",
+  "site": "stripchat"
+}
+```
+
+Parameters:
+- `username` (string, required): streamer username from site URL
+- `site` (string, required): site slug or full site name (case-insensitive)
+
+Response:
+- `201 Created`: Added successfully
+- `409 Conflict`: streamer already exists
+- `400 Bad Request`: invalid JSON, missing fields, or invalid add request
+- `401 Unauthorized`: missing or invalid Basic Auth (when password is enabled)
+- `403 Forbidden`: request is not from localhost
+- `500 Internal Server Error`: unexpected error
+
+Success example:
+```json
+{
+  "ok": true,
+  "message": "Added [stripchat] streamer_name",
+  "streamer": {
+    "username": "streamer_name",
+    "site": "stripchat",
+    "running": true,
+    "recording": false,
+    "url": "https://..."
+  }
+}
+```
+
+Error example:
+```json
+{
+  "ok": false,
+  "error": "already_exists",
+  "message": "Streamer already exists"
+}
+```
+
+Preflight/CORS:
+- `OPTIONS /api/streamers` is supported
+- Allow headers: `Authorization, Content-Type`
+- Allow methods: `POST, OPTIONS`
+
+curl example:
+```bash
+curl -X POST "http://127.0.0.1:5000/api/streamers" \
+  -u "admin:<WEBSERVER_PASSWORD>" \
+  -H "Content-Type: application/json" \
+  -d '{"username":"streamer_name","site":"stripchat"}'
+```
+
 ## Docker support
 
 You can run this application in docker. I prefer docker-compose so I included an example docker-compose.yml file that you can use.

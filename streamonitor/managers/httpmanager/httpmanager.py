@@ -65,6 +65,17 @@ class HTTPManager(Manager):
 
             return wrapped_view
 
+        def localhost_only_json_response():
+            remote_addr = request.remote_addr or ""
+            localhost_addrs = {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
+            if remote_addr in localhost_addrs:
+                return None
+            return Response(json.dumps({
+                "ok": False,
+                "error": "forbidden",
+                "message": "This endpoint is only accessible from localhost",
+            }), status=403, mimetype='application/json')
+
         @app.route('/dashboard')
         @login_required
         def mainSite():
@@ -111,6 +122,97 @@ class HTTPManager(Manager):
         @login_required
         def execApiCommand():
             return self.execCmd(request.args.get("command"))
+
+        @app.route('/api/streamers', methods=['OPTIONS'])
+        def apiStreamersOptions():
+            localhost_denied = localhost_only_json_response()
+            if localhost_denied is not None:
+                return localhost_denied
+            response = Response('', status=204)
+            response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+            response.headers['Vary'] = 'Origin'
+            response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+            response.headers['Access-Control-Allow-Headers'] = 'Authorization, Content-Type'
+            return response
+
+        @app.route('/api/streamers', methods=['POST'])
+        @login_required
+        def apiAddStreamer():
+            localhost_denied = localhost_only_json_response()
+            if localhost_denied is not None:
+                return localhost_denied
+            payload = request.get_json(silent=True)
+            if payload is None:
+                response = Response(json.dumps({
+                    "ok": False,
+                    "error": "invalid_json",
+                    "message": "Request body must be valid JSON",
+                }), status=400, mimetype='application/json')
+                response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+                response.headers['Vary'] = 'Origin'
+                return response
+
+            username = str(payload.get("username", "")).strip()
+            site = str(payload.get("site", "")).strip()
+            if username == "" or site == "":
+                response = Response(json.dumps({
+                    "ok": False,
+                    "error": "missing_fields",
+                    "message": "Both 'username' and 'site' are required",
+                }), status=400, mimetype='application/json')
+                response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+                response.headers['Vary'] = 'Origin'
+                return response
+
+            streamer = self.getStreamer(username, site)
+            res = self.do_add(streamer, username, site)
+
+            status_code = 500
+            body = {
+                "ok": False,
+                "message": res,
+            }
+
+            if res.startswith("Added "):
+                created = self.getStreamer(username, site)
+                status_code = 201
+                body = {
+                    "ok": True,
+                    "message": res,
+                    "streamer": {
+                        "username": created.username if created else username,
+                        "site": created.siteslug if created else site,
+                        "running": created.running if created else True,
+                        "recording": created.recording if created else False,
+                        "url": created.url if created else None,
+                    }
+                }
+            elif res == "Streamer already exists":
+                status_code = 409
+                body = {
+                    "ok": False,
+                    "error": "already_exists",
+                    "message": res,
+                }
+            elif res == "Missing value(s)":
+                status_code = 400
+                body = {
+                    "ok": False,
+                    "error": "missing_fields",
+                    "message": res,
+                }
+            elif res.startswith("Failed to add:"):
+                status_code = 400
+                body = {
+                    "ok": False,
+                    "error": "add_failed",
+                    "message": res,
+                }
+
+            response = Response(json.dumps(body), status=status_code, mimetype='application/json')
+            response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+            response.headers['Vary'] = 'Origin'
+            return response
 
         @app.route('/', methods=['GET'])
         @login_required
