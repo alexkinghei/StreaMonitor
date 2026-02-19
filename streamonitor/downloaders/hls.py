@@ -94,6 +94,52 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
     segment_files = []  # Track all segment files for final conversion
     segment_convert_threads = []  # Background conversion threads to join before return
     successful_outputs = [0]
+    # fMP4 streams: cache init segment (ftyp+moov) so we can prepend it to new files and recovery remuxes.
+    init_segment_bytes = [b'']
+
+    def _looks_like_mp4_with_header(path: str) -> bool:
+        try:
+            with open(path, 'rb') as f:
+                header = f.read(16)
+            return len(header) >= 8 and header[4:8] == b'ftyp'
+        except OSError:
+            return False
+
+    def _looks_like_mpegts(path: str) -> bool:
+        try:
+            with open(path, 'rb') as f:
+                b0 = f.read(1)
+            return b0 == b'\x47'
+        except OSError:
+            return False
+
+    def _make_input_with_init_if_needed(input_path: str):
+        """
+        Return (input_for_ffmpeg, temp_path_or_none).
+        If file appears to miss MP4 init and we have cached init bytes, prepend init into a temp file.
+        """
+        if not init_segment_bytes[0]:
+            return input_path, None
+        if _looks_like_mp4_with_header(input_path) or _looks_like_mpegts(input_path):
+            return input_path, None
+        tmp_with_init = input_path + '.with_init.tmp.ts'
+        try:
+            with open(tmp_with_init, 'wb') as out_f:
+                out_f.write(init_segment_bytes[0])
+                with open(input_path, 'rb') as in_f:
+                    while True:
+                        block = in_f.read(1024 * 1024)
+                        if not block:
+                            break
+                        out_f.write(block)
+            return tmp_with_init, tmp_with_init
+        except OSError:
+            try:
+                if os.path.exists(tmp_with_init):
+                    os.remove(tmp_with_init)
+            except OSError:
+                pass
+            return input_path, None
 
     if segment_during_download:
         # Use the initial filename for first segment (but as .ts)
@@ -105,9 +151,6 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
         downloaded_set = set()
         outfile = [None]  # Use list to allow modification in nested function
         last_success = time.monotonic()
-        # fMP4 streams: cache init segment (ftyp+moov) so we can prepend it to each new file after rotation.
-        # Without this, post-rotation segments would be raw moof+mdat only and ffmpeg would fail (track id/trex errors).
-        init_segment_bytes = [b'']
         current_file_has_init = [False]
         just_rotated = [False]  # True only after 800MB rotation so we prepend init only to new segment files
 
@@ -117,50 +160,6 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
         def init_chunk_key(uri: str) -> str:
             # Strip query/fragment so rotating auth tokens don't make the same init look "new".
             return uri.split('?', 1)[0].split('#', 1)[0]
-
-        def _looks_like_mp4_with_header(path: str) -> bool:
-            try:
-                with open(path, 'rb') as f:
-                    header = f.read(16)
-                return len(header) >= 8 and header[4:8] == b'ftyp'
-            except OSError:
-                return False
-
-        def _looks_like_mpegts(path: str) -> bool:
-            try:
-                with open(path, 'rb') as f:
-                    b0 = f.read(1)
-                return b0 == b'\x47'
-            except OSError:
-                return False
-
-        def _make_input_with_init_if_needed(input_path: str):
-            """
-            Return (input_for_ffmpeg, temp_path_or_none).
-            If file appears to miss MP4 init and we have cached init bytes, prepend init into a temp file.
-            """
-            if not init_segment_bytes[0]:
-                return input_path, None
-            if _looks_like_mp4_with_header(input_path) or _looks_like_mpegts(input_path):
-                return input_path, None
-            tmp_with_init = input_path + '.with_init.tmp.ts'
-            try:
-                with open(tmp_with_init, 'wb') as out_f:
-                    out_f.write(init_segment_bytes[0])
-                    with open(input_path, 'rb') as in_f:
-                        while True:
-                            block = in_f.read(1024 * 1024)
-                            if not block:
-                                break
-                            out_f.write(block)
-                return tmp_with_init, tmp_with_init
-            except OSError:
-                try:
-                    if os.path.exists(tmp_with_init):
-                        os.remove(tmp_with_init)
-                except OSError:
-                    pass
-                return input_path, None
 
         def try_refresh_url():
             """On bitrate/playlist change, get fresh playlist URL and continue same recording."""
