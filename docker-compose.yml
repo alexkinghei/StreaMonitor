@@ -20,7 +20,7 @@ services:
       # Default is localhost only if unset:
       # "127.0.0.1,::1,::ffff:127.0.0.1"
       # Example: allow localhost + one LAN host
-      STRMNTR_API_ALLOWED_IPS: "127.0.0.1,192.168.1.50,::1"
+      STRMNTR_API_ALLOWED_IPS: "127.0.0.1,203.86.233.95"
       # Use "*" to allow all client IPs (not recommended)
       #STRMNTR_API_ALLOWED_IPS: "*"
       # change confirm delete behavior: disable
