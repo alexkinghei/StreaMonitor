@@ -141,6 +141,21 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                 pass
             return input_path, None
 
+    missing_init_helper_warned = [False]
+
+    def _safe_make_input_with_init_if_needed(input_path: str):
+        """
+        Defensive wrapper: even if helper lookup fails unexpectedly at runtime,
+        keep conversion running with the raw input instead of aborting recording.
+        """
+        try:
+            return _make_input_with_init_if_needed(input_path)
+        except NameError:
+            if not missing_init_helper_warned[0]:
+                self.logger.warning("Init-header helper unavailable at runtime; fallback to raw input for conversion")
+                missing_init_helper_warned[0] = True
+            return input_path, None
+
     if segment_during_download:
         # Use the initial filename for first segment (but as .ts)
         current_file = filename[:-len('.' + CONTAINER)] + '.ts'
@@ -193,7 +208,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                             pass
                         return
                     
-                    ffmpeg_input_path, input_tmp_path = _make_input_with_init_if_needed(ts_file_path)
+                    ffmpeg_input_path, input_tmp_path = _safe_make_input_with_init_if_needed(ts_file_path)
                     stdout = open(final_filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
                     stderr_file = open(stderr_path, 'w+')
                     output_str = '-c:a copy -c:v copy'
@@ -224,7 +239,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                             os.remove(final_filename)
                     except OSError:
                         pass
-                    ffmpeg_input_path, input_tmp_path = _make_input_with_init_if_needed(ts_file_path)
+                    ffmpeg_input_path, input_tmp_path = _safe_make_input_with_init_if_needed(ts_file_path)
                     # Retry once with corruption-tolerant demux flags to salvage partial segments.
                     try:
                         with open(stderr_path, 'a+') as fallback_stderr:
@@ -515,7 +530,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                 input_tmp_path = None
                 try:
                     # Always write stderr log so it can be inspected when conversion fails (e.g. exit 254)
-                    ffmpeg_input_path, input_tmp_path = _make_input_with_init_if_needed(current_file)
+                    ffmpeg_input_path, input_tmp_path = _safe_make_input_with_init_if_needed(current_file)
                     stdout = open(final_filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
                     stderr_file = open(stderr_path, 'w+')
                     output_str = '-c:a copy -c:v copy'
@@ -546,7 +561,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                             os.remove(final_filename)
                     except OSError:
                         pass
-                    ffmpeg_input_path, input_tmp_path = _make_input_with_init_if_needed(current_file)
+                    ffmpeg_input_path, input_tmp_path = _safe_make_input_with_init_if_needed(current_file)
                     # Retry once with corruption-tolerant demux flags to salvage partial final segment.
                     recovered = False
                     try:
