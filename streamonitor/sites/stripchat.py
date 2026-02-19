@@ -95,7 +95,8 @@ class StripChat(RoomIdBot):
         elif psch == 'v2':
             _mouflon_file_attr = "#EXT-X-MOUFLON:URI:"
         else:
-            return None
+            # Keep original playlist untouched when mouflon tag/key is unavailable.
+            return content
 
         decoded = ''
         lines = content.splitlines()
@@ -109,7 +110,8 @@ class StripChat(RoomIdBot):
                     encoded_part = uri.split('_')[-2]
                     decoded_part = _decode(encoded_part[::-1], pdkey)
                     last_decoded_file = uri.replace(encoded_part, decoded_part).split('/', maxsplit=4)[4]
-            elif line.endswith(_mouflon_filename) and last_decoded_file:
+            elif last_decoded_file and _mouflon_filename in line:
+                # Also handle quoted URI attributes like: #EXT-X-MAP:URI="media.mp4"
                 decoded += (line.replace(_mouflon_filename, last_decoded_file)) + '\n'
                 last_decoded_file = None
             else:

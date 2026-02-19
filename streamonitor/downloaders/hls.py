@@ -118,6 +118,50 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
             # Strip query/fragment so rotating auth tokens don't make the same init look "new".
             return uri.split('?', 1)[0].split('#', 1)[0]
 
+        def _looks_like_mp4_with_header(path: str) -> bool:
+            try:
+                with open(path, 'rb') as f:
+                    header = f.read(16)
+                return len(header) >= 8 and header[4:8] == b'ftyp'
+            except OSError:
+                return False
+
+        def _looks_like_mpegts(path: str) -> bool:
+            try:
+                with open(path, 'rb') as f:
+                    b0 = f.read(1)
+                return b0 == b'\x47'
+            except OSError:
+                return False
+
+        def _make_input_with_init_if_needed(input_path: str):
+            """
+            Return (input_for_ffmpeg, temp_path_or_none).
+            If file appears to miss MP4 init and we have cached init bytes, prepend init into a temp file.
+            """
+            if not init_segment_bytes[0]:
+                return input_path, None
+            if _looks_like_mp4_with_header(input_path) or _looks_like_mpegts(input_path):
+                return input_path, None
+            tmp_with_init = input_path + '.with_init.tmp.ts'
+            try:
+                with open(tmp_with_init, 'wb') as out_f:
+                    out_f.write(init_segment_bytes[0])
+                    with open(input_path, 'rb') as in_f:
+                        while True:
+                            block = in_f.read(1024 * 1024)
+                            if not block:
+                                break
+                            out_f.write(block)
+                return tmp_with_init, tmp_with_init
+            except OSError:
+                try:
+                    if os.path.exists(tmp_with_init):
+                        os.remove(tmp_with_init)
+                except OSError:
+                    pass
+                return input_path, None
+
         def try_refresh_url():
             """On bitrate/playlist change, get fresh playlist URL and continue same recording."""
             try:
@@ -135,6 +179,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
             def convert():
                 stderr_path = final_filename + '.postprocess_stderr.log'
                 stderr_file = None
+                input_tmp_path = None
                 try:
                     # Wait a bit to ensure file is fully written and closed (fsync in main thread helps)
                     sleep(0.5)
@@ -149,10 +194,11 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                             pass
                         return
                     
+                    ffmpeg_input_path, input_tmp_path = _make_input_with_init_if_needed(ts_file_path)
                     stdout = open(final_filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
                     stderr_file = open(stderr_path, 'w+')
                     output_str = '-c:a copy -c:v copy'
-                    ff = FFmpeg(executable=FFMPEG_PATH, inputs={ts_file_path: None}, outputs={final_filename: output_str})
+                    ff = FFmpeg(executable=FFMPEG_PATH, inputs={ffmpeg_input_path: None}, outputs={final_filename: output_str})
                     ff.run(stdout=stdout, stderr=stderr_file)
                     stderr_file.close()
                     stderr_file = None
@@ -160,6 +206,11 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                         os.remove(stderr_path)
                     except OSError:
                         pass
+                    if input_tmp_path:
+                        try:
+                            os.remove(input_tmp_path)
+                        except OSError:
+                            pass
                     os.remove(ts_file_path)
                     _rename_mp4_by_title(final_filename, self.logger)
                     successful_outputs[0] += 1
@@ -174,6 +225,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                             os.remove(final_filename)
                     except OSError:
                         pass
+                    ffmpeg_input_path, input_tmp_path = _make_input_with_init_if_needed(ts_file_path)
                     # Retry once with corruption-tolerant demux flags to salvage partial segments.
                     try:
                         with open(stderr_path, 'a+') as fallback_stderr:
@@ -182,7 +234,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                                     FFMPEG_PATH, '-y',
                                     '-err_detect', 'ignore_err',
                                     '-fflags', '+discardcorrupt+genpts',
-                                    '-i', ts_file_path,
+                                    '-i', ffmpeg_input_path,
                                     '-c:a', 'copy',
                                     '-c:v', 'copy',
                                     final_filename,
@@ -195,12 +247,22 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                             os.remove(stderr_path)
                         except OSError:
                             pass
+                        if input_tmp_path:
+                            try:
+                                os.remove(input_tmp_path)
+                            except OSError:
+                                pass
                         os.remove(ts_file_path)
                         _rename_mp4_by_title(final_filename, self.logger)
                         successful_outputs[0] += 1
                         return
                     except Exception:
                         pass
+                    if input_tmp_path:
+                        try:
+                            os.remove(input_tmp_path)
+                        except OSError:
+                            pass
                     # Log all non-zero exit codes (255 was previously ignored and caused silent failures)
                     if e.exit_code:
                         self.logger.error(
@@ -217,6 +279,11 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                     if stderr_file:
                         try:
                             stderr_file.close()
+                        except OSError:
+                            pass
+                    if input_tmp_path:
+                        try:
+                            os.remove(input_tmp_path)
                         except OSError:
                             pass
                     self.logger.error(f'Unexpected error converting segment: {e}. Check {stderr_path!r} for ffmpeg stderr.')
@@ -300,7 +367,9 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                     return
                 content = r.content.decode("utf-8")
                 if m3u_processor:
-                    content = m3u_processor(content)
+                    processed = m3u_processor(content)
+                    if isinstance(processed, str) and processed:
+                        content = processed
                 chunklist = m3u8.loads(content)
                 if len(chunklist.segments) == 0:
                     # Sometimes live playlists temporarily return empty; tolerate within grace.
@@ -327,7 +396,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                         downloaded_set.add(chunk_key)
                     chunk_uri = chunk.uri
                     self.debug('Downloading ' + chunk_uri)
-                    if not chunk_uri.startswith("https://"):
+                    if not (chunk_uri.startswith("https://") or chunk_uri.startswith("http://")):
                         chunk_uri = '/'.join(url_ref[0].split('.m3u8')[0].split('/')[:-1]) + '/' + chunk_uri
                     try:
                         m = session.get(chunk_uri, headers=self.headers, cookies=self.cookies, timeout=30)
@@ -444,12 +513,14 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                 final_filename = current_file.replace('.ts', '.' + CONTAINER)
                 stderr_path = final_filename + '.postprocess_stderr.log'
                 stderr_file = None
+                input_tmp_path = None
                 try:
                     # Always write stderr log so it can be inspected when conversion fails (e.g. exit 254)
+                    ffmpeg_input_path, input_tmp_path = _make_input_with_init_if_needed(current_file)
                     stdout = open(final_filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
                     stderr_file = open(stderr_path, 'w+')
                     output_str = '-c:a copy -c:v copy'
-                    ff = FFmpeg(executable=FFMPEG_PATH, inputs={current_file: None}, outputs={final_filename: output_str})
+                    ff = FFmpeg(executable=FFMPEG_PATH, inputs={ffmpeg_input_path: None}, outputs={final_filename: output_str})
                     ff.run(stdout=stdout, stderr=stderr_file)
                     stderr_file.close()
                     stderr_file = None
@@ -457,6 +528,11 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                         os.remove(stderr_path)
                     except OSError:
                         pass
+                    if input_tmp_path:
+                        try:
+                            os.remove(input_tmp_path)
+                        except OSError:
+                            pass
                     os.remove(current_file)
                     _rename_mp4_by_title(final_filename, self.logger)
                     successful_outputs[0] += 1
@@ -471,6 +547,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                             os.remove(final_filename)
                     except OSError:
                         pass
+                    ffmpeg_input_path, input_tmp_path = _make_input_with_init_if_needed(current_file)
                     # Retry once with corruption-tolerant demux flags to salvage partial final segment.
                     recovered = False
                     try:
@@ -480,7 +557,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                                     FFMPEG_PATH, '-y',
                                     '-err_detect', 'ignore_err',
                                     '-fflags', '+discardcorrupt+genpts',
-                                    '-i', current_file,
+                                    '-i', ffmpeg_input_path,
                                     '-c:a', 'copy',
                                     '-c:v', 'copy',
                                     final_filename,
@@ -493,18 +570,33 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                             os.remove(stderr_path)
                         except OSError:
                             pass
+                        if input_tmp_path:
+                            try:
+                                os.remove(input_tmp_path)
+                            except OSError:
+                                pass
                         os.remove(current_file)
                         _rename_mp4_by_title(final_filename, self.logger)
                         successful_outputs[0] += 1
                         recovered = True
                     except Exception:
                         pass
+                    if input_tmp_path:
+                        try:
+                            os.remove(input_tmp_path)
+                        except OSError:
+                            pass
                     if (not recovered) and e.exit_code:
                         self.logger.error(f'Error converting final segment (exit_code=%s): %s. Check {stderr_path!r} for ffmpeg stderr.', e.exit_code, e)
                 except Exception as e:
                     if stderr_file:
                         try:
                             stderr_file.close()
+                        except OSError:
+                            pass
+                    if input_tmp_path:
+                        try:
+                            os.remove(input_tmp_path)
                         except OSError:
                             pass
                     self.logger.error(f'Unexpected error converting final segment: {e}. Check {stderr_path!r} for ffmpeg stderr.')
