@@ -7,7 +7,7 @@ import json
 import logging
 
 from parameters import WEBSERVER_HOST, WEBSERVER_PORT, WEBSERVER_PASSWORD, WEB_LIST_FREQUENCY, WEB_STATUS_FREQUENCY, \
-    WEBSERVER_SKIN, WEB_THEATER_MODE
+    WEBSERVER_SKIN, WEB_THEATER_MODE, WEBSERVER_API_ALLOWED_IPS
 import streamonitor.log as log
 from functools import wraps
 from secrets import compare_digest
@@ -65,15 +65,14 @@ class HTTPManager(Manager):
 
             return wrapped_view
 
-        def localhost_only_json_response():
+        def api_ip_allowlist_json_response():
             remote_addr = request.remote_addr or ""
-            localhost_addrs = {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
-            if remote_addr in localhost_addrs:
+            if "*" in WEBSERVER_API_ALLOWED_IPS or remote_addr in WEBSERVER_API_ALLOWED_IPS:
                 return None
             return Response(json.dumps({
                 "ok": False,
                 "error": "forbidden",
-                "message": "This endpoint is only accessible from localhost",
+                "message": f"Client IP '{remote_addr}' is not in STRMNTR_API_ALLOWED_IPS allowlist",
             }), status=403, mimetype='application/json')
 
         @app.route('/dashboard')
@@ -125,9 +124,9 @@ class HTTPManager(Manager):
 
         @app.route('/api/streamers', methods=['OPTIONS'])
         def apiStreamersOptions():
-            localhost_denied = localhost_only_json_response()
-            if localhost_denied is not None:
-                return localhost_denied
+            ip_denied = api_ip_allowlist_json_response()
+            if ip_denied is not None:
+                return ip_denied
             response = Response('', status=204)
             response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
             response.headers['Vary'] = 'Origin'
@@ -138,9 +137,9 @@ class HTTPManager(Manager):
         @app.route('/api/streamers', methods=['POST'])
         @login_required
         def apiAddStreamer():
-            localhost_denied = localhost_only_json_response()
-            if localhost_denied is not None:
-                return localhost_denied
+            ip_denied = api_ip_allowlist_json_response()
+            if ip_denied is not None:
+                return ip_denied
             payload = request.get_json(silent=True)
             if payload is None:
                 response = Response(json.dumps({

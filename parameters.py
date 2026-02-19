@@ -126,3 +126,13 @@ WEB_CONFIRM_DELETES = env.str("STRMNTR_CONFIRM_DEL", "MOBILE")
 # Password for the web server
 # If empty no auth required, else username admin and choosen password
 WEBSERVER_PASSWORD = env.str("STRMNTR_PASSWORD", "")
+
+# Allowed client IPs for External API endpoints (comma-separated).
+# Default: localhost only.
+# Example: "127.0.0.1,192.168.1.50,::1"
+# Use "*" to allow all client IPs.
+WEBSERVER_API_ALLOWED_IPS = {
+    ip.strip()
+    for ip in env.str("STRMNTR_API_ALLOWED_IPS", "127.0.0.1,::1,::ffff:127.0.0.1").split(",")
+    if ip.strip()
+}

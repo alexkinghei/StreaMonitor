@@ -96,8 +96,11 @@ Endpoint:
 `POST /api/streamers`
 
 Access scope:
-- Only localhost requests are allowed (`127.0.0.1` / `::1`)
-- Non-localhost requests return `403 Forbidden`
+- Access is controlled by `STRMNTR_API_ALLOWED_IPS` (comma-separated IP allowlist)
+- Default value: `127.0.0.1,::1,::ffff:127.0.0.1` (localhost only)
+- Example: `STRMNTR_API_ALLOWED_IPS=127.0.0.1,192.168.1.50`
+- Use `STRMNTR_API_ALLOWED_IPS=*` to allow all client IPs
+- Requests from non-allowlisted IPs return `403 Forbidden`
 
 Auth:
 - HTTP Basic Auth
@@ -126,7 +129,7 @@ Response:
 - `409 Conflict`: streamer already exists
 - `400 Bad Request`: invalid JSON, missing fields, or invalid add request
 - `401 Unauthorized`: missing or invalid Basic Auth (when password is enabled)
-- `403 Forbidden`: request is not from localhost
+- `403 Forbidden`: client IP is not in `STRMNTR_API_ALLOWED_IPS`
 - `500 Internal Server Error`: unexpected error
 
 Success example:
