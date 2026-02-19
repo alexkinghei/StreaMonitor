@@ -149,10 +149,23 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
         keep conversion running with the raw input instead of aborting recording.
         """
         try:
-            return _make_input_with_init_if_needed(input_path)
-        except NameError:
+            helper = _make_input_with_init_if_needed
+        except Exception as e:
             if not missing_init_helper_warned[0]:
-                self.logger.warning("Init-header helper unavailable at runtime; fallback to raw input for conversion")
+                self.logger.warning(
+                    "Init-header helper unavailable at runtime; fallback to raw input for conversion (%s)",
+                    e,
+                )
+                missing_init_helper_warned[0] = True
+            return input_path, None
+        try:
+            return helper(input_path)
+        except Exception as e:
+            if not missing_init_helper_warned[0]:
+                self.logger.warning(
+                    "Init-header helper failed; fallback to raw input for conversion (%s)",
+                    e,
+                )
                 missing_init_helper_warned[0] = True
             return input_path, None
 
