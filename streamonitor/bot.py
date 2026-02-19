@@ -228,30 +228,54 @@ class Bot(Thread):
                 i += 1
 
         def remux_ts_to_mp4(input_ts_path: str, output_mp4_path: str) -> bool:
+            def detect_demuxer(path: str) -> str | None:
+                try:
+                    with open(path, "rb") as f:
+                        header = f.read(16)
+                except OSError:
+                    return None
+                if len(header) >= 1 and header[0:1] == b"\x47":
+                    return "mpegts"
+                if len(header) >= 8 and header[4:8] == b"ftyp":
+                    return "mp4"
+                return None
+
+            def iter_demuxers(path: str):
+                detected = detect_demuxer(path)
+                seen = set()
+                for demuxer in (None, detected, "mpegts", "mp4"):
+                    if demuxer in seen:
+                        continue
+                    seen.add(demuxer)
+                    yield demuxer
+
             # Pass 1: normal stream copy remux.
             # Pass 2: tolerate minor corruption to recover as much as possible.
-            commands = [
-                [FFMPEG_PATH, "-y", "-i", input_ts_path, "-c", "copy", output_mp4_path],
-                [
-                    FFMPEG_PATH, "-y",
-                    "-err_detect", "ignore_err",
-                    "-fflags", "+discardcorrupt+genpts",
-                    "-i", input_ts_path,
-                    "-c", "copy",
-                    output_mp4_path,
-                ],
-            ]
-            for cmd in commands:
-                try:
-                    subprocess.run(
-                        cmd,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        check=True,
-                    )
-                    return True
-                except Exception:
-                    continue
+            for tolerant in (False, True):
+                for demuxer in iter_demuxers(input_ts_path):
+                    cmd = [FFMPEG_PATH, "-y"]
+                    if tolerant:
+                        cmd.extend([
+                            "-err_detect", "ignore_err",
+                            "-fflags", "+discardcorrupt+genpts",
+                        ])
+                    if demuxer:
+                        cmd.extend(["-f", demuxer])
+                    cmd.extend(["-i", input_ts_path, "-c", "copy", output_mp4_path])
+                    try:
+                        subprocess.run(
+                            cmd,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            check=True,
+                        )
+                        return True
+                    except Exception:
+                        try:
+                            if os.path.exists(output_mp4_path):
+                                os.remove(output_mp4_path)
+                        except OSError:
+                            pass
             return False
 
         # Pass 1: delete old postprocess logs (user requested no logs)

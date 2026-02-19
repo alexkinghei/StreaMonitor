@@ -169,6 +169,58 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                 missing_init_helper_warned[0] = True
             return input_path, None
 
+    def _iter_input_demuxers(input_path: str):
+        """
+        Yield ffmpeg input demuxers to try in a stable order:
+        auto-detect first, then detected/known demuxers.
+        """
+        detected = None
+        if _looks_like_mpegts(input_path):
+            detected = 'mpegts'
+        elif _looks_like_mp4_with_header(input_path):
+            detected = 'mp4'
+        seen = set()
+        for demuxer in (None, detected, 'mpegts', 'mp4'):
+            if demuxer in seen:
+                continue
+            seen.add(demuxer)
+            yield demuxer
+
+    def _run_recovery_remux(input_path: str, output_path: str, stderr_target) -> bool:
+        """
+        Retry remux with corruption-tolerant flags and multiple input demuxers.
+        This recovers cases where ffmpeg mis-detects .ts/fMP4 fragments by extension/content.
+        """
+        for demuxer in _iter_input_demuxers(input_path):
+            cmd = [
+                FFMPEG_PATH, '-y',
+                '-err_detect', 'ignore_err',
+                '-fflags', '+discardcorrupt+genpts',
+            ]
+            if demuxer:
+                cmd.extend(['-f', demuxer])
+            cmd.extend([
+                '-i', input_path,
+                '-c:a', 'copy',
+                '-c:v', 'copy',
+                output_path,
+            ])
+            try:
+                subprocess.run(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=stderr_target,
+                    check=True,
+                )
+                return True
+            except Exception:
+                try:
+                    if os.path.exists(output_path):
+                        os.remove(output_path)
+                except OSError:
+                    pass
+        return False
+
     if segment_during_download:
         # Use the initial filename for first segment (but as .ts)
         current_file = filename[:-len('.' + CONTAINER)] + '.ts'
@@ -256,20 +308,13 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                     # Retry once with corruption-tolerant demux flags to salvage partial segments.
                     try:
                         with open(stderr_path, 'a+') as fallback_stderr:
-                            subprocess.run(
-                                [
-                                    FFMPEG_PATH, '-y',
-                                    '-err_detect', 'ignore_err',
-                                    '-fflags', '+discardcorrupt+genpts',
-                                    '-i', ffmpeg_input_path,
-                                    '-c:a', 'copy',
-                                    '-c:v', 'copy',
-                                    final_filename,
-                                ],
-                                stdout=subprocess.DEVNULL,
-                                stderr=fallback_stderr,
-                                check=True,
+                            recovered = _run_recovery_remux(
+                                ffmpeg_input_path,
+                                final_filename,
+                                fallback_stderr,
                             )
+                        if not recovered:
+                            raise RuntimeError("Recovery remux failed")
                         try:
                             os.remove(stderr_path)
                         except OSError:
@@ -579,20 +624,13 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                     recovered = False
                     try:
                         with open(stderr_path, 'a+') as fallback_stderr:
-                            subprocess.run(
-                                [
-                                    FFMPEG_PATH, '-y',
-                                    '-err_detect', 'ignore_err',
-                                    '-fflags', '+discardcorrupt+genpts',
-                                    '-i', ffmpeg_input_path,
-                                    '-c:a', 'copy',
-                                    '-c:v', 'copy',
-                                    final_filename,
-                                ],
-                                stdout=subprocess.DEVNULL,
-                                stderr=fallback_stderr,
-                                check=True,
+                            recovered = _run_recovery_remux(
+                                ffmpeg_input_path,
+                                final_filename,
+                                fallback_stderr,
                             )
+                        if not recovered:
+                            raise RuntimeError("Recovery remux failed")
                         try:
                             os.remove(stderr_path)
                         except OSError:
@@ -668,20 +706,8 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
             except OSError:
                 pass
             try:
-                subprocess.run(
-                    [
-                        FFMPEG_PATH, '-y',
-                        '-err_detect', 'ignore_err',
-                        '-fflags', '+discardcorrupt+genpts',
-                        '-i', tmpfilename,
-                        '-c:a', 'copy',
-                        '-c:v', 'copy',
-                        filename,
-                    ],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=True,
-                )
+                if not _run_recovery_remux(tmpfilename, filename, subprocess.DEVNULL):
+                    raise RuntimeError("Recovery remux failed")
                 os.remove(tmpfilename)
                 _rename_mp4_by_title(filename, self.logger)
             except Exception:
