@@ -213,6 +213,78 @@ class HTTPManager(Manager):
             response.headers['Vary'] = 'Origin'
             return response
 
+        @app.route('/api/streamers/recording', methods=['OPTIONS'])
+        def apiStreamerRecordingOptions():
+            ip_denied = api_ip_allowlist_json_response()
+            if ip_denied is not None:
+                return ip_denied
+            response = Response('', status=204)
+            response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+            response.headers['Vary'] = 'Origin'
+            response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+            response.headers['Access-Control-Allow-Headers'] = 'Authorization, Content-Type'
+            return response
+
+        @app.route('/api/streamers/recording', methods=['GET'])
+        @login_required
+        def apiStreamerRecording():
+            ip_denied = api_ip_allowlist_json_response()
+            if ip_denied is not None:
+                return ip_denied
+
+            username = str(request.args.get("username", "")).strip()
+            site = str(request.args.get("site", "")).strip()
+            if username == "" or site == "":
+                response = Response(json.dumps({
+                    "ok": False,
+                    "error": "missing_fields",
+                    "message": "Both 'username' and 'site' are required",
+                }), status=400, mimetype='application/json')
+                response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+                response.headers['Vary'] = 'Origin'
+                return response
+
+            streamer = self.getStreamer(username, site)
+            if streamer is None:
+                body = {
+                    "ok": True,
+                    "exists": False,
+                    "streamer": {
+                        "username": username,
+                        "site": site,
+                        "running": False,
+                        "recording": False,
+                        "has_recordings": False,
+                        "recordings_count": 0,
+                        "status": None,
+                        "url": None,
+                    }
+                }
+                response = Response(json.dumps(body), status=200, mimetype='application/json')
+                response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+                response.headers['Vary'] = 'Origin'
+                return response
+
+            streamer.cache_file_list()
+            body = {
+                "ok": True,
+                "exists": True,
+                "streamer": {
+                    "username": streamer.username,
+                    "site": streamer.siteslug,
+                    "running": streamer.running,
+                    "recording": streamer.recording,
+                    "has_recordings": len(streamer.video_files) > 0,
+                    "recordings_count": len(streamer.video_files),
+                    "status": streamer.status(),
+                    "url": streamer.url,
+                }
+            }
+            response = Response(json.dumps(body), status=200, mimetype='application/json')
+            response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+            response.headers['Vary'] = 'Origin'
+            return response
+
         @app.route('/', methods=['GET'])
         @login_required
         def status():

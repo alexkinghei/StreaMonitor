@@ -169,6 +169,83 @@ curl -X POST "http://127.0.0.1:5000/api/streamers" \
   -d '{"username":"streamer_name","site":"stripchat"}'
 ```
 
+#### External API (Check recording status)
+
+Endpoint:
+`GET /api/streamers/recording?username=<username>&site=<site>`
+
+Access scope:
+- Access is controlled by `STRMNTR_API_ALLOWED_IPS` (comma-separated IP allowlist)
+- Default value: `127.0.0.1,::1,::ffff:127.0.0.1` (localhost only)
+- Example: `STRMNTR_API_ALLOWED_IPS=127.0.0.1,192.168.1.50`
+- Use `STRMNTR_API_ALLOWED_IPS=*` to allow all client IPs
+- Requests from non-allowlisted IPs return `403 Forbidden`
+
+Auth:
+- HTTP Basic Auth
+- username: `admin`
+- password: value of `WEBSERVER_PASSWORD` in `parameters.py`
+- If `WEBSERVER_PASSWORD` is empty, auth is not required.
+
+Query parameters:
+- `username` (string, required): streamer username from site URL
+- `site` (string, required): site slug or full site name (case-insensitive)
+
+Response:
+- `200 OK`: always returns existence/result payload
+- `400 Bad Request`: missing `username` or `site`
+- `401 Unauthorized`: missing or invalid Basic Auth (when password is enabled)
+- `403 Forbidden`: client IP is not in `STRMNTR_API_ALLOWED_IPS`
+
+Success example:
+```json
+{
+  "ok": true,
+  "exists": true,
+  "streamer": {
+    "username": "streamer_name",
+    "site": "stripchat",
+    "running": true,
+    "recording": false,
+    "has_recordings": true,
+    "recordings_count": 12,
+    "status": "Channel online",
+    "url": "https://..."
+  }
+}
+```
+
+Error example:
+```json
+{
+  "ok": true,
+  "exists": false,
+  "streamer": {
+    "username": "streamer_name",
+    "site": "stripchat",
+    "running": false,
+    "recording": false,
+    "has_recordings": false,
+    "recordings_count": 0,
+    "status": null,
+    "url": null
+  }
+}
+```
+
+Preflight/CORS:
+- `OPTIONS /api/streamers/recording` is supported
+- Allow headers: `Authorization, Content-Type`
+- Allow methods: `GET, OPTIONS`
+
+curl example:
+```bash
+curl -G "http://127.0.0.1:5000/api/streamers/recording" \
+  -u "admin:<WEBSERVER_PASSWORD>" \
+  --data-urlencode "username=streamer_name" \
+  --data-urlencode "site=stripchat"
+```
+
 ## Docker support
 
 You can run this application in docker. I prefer docker-compose so I included an example docker-compose.yml file that you can use.
