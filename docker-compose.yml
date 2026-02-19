@@ -16,6 +16,13 @@ services:
       #STRMNTR_PASSWORD: ''
       # unbind web interface (bound to 127.0.0.1 by default)
       STRMNTR_HOST: '0.0.0.0'
+      # External API allowed client IPs (comma-separated)
+      # Default is localhost only if unset:
+      # "127.0.0.1,::1,::ffff:127.0.0.1"
+      # Example: allow localhost + one LAN host
+      STRMNTR_API_ALLOWED_IPS: "127.0.0.1,192.168.1.50,::1"
+      # Use "*" to allow all client IPs (not recommended)
+      #STRMNTR_API_ALLOWED_IPS: "*"
       # change confirm delete behavior: disable
       #STRMNTR_CONFIRM_DEL: ""
       # change confirm delete behavior: always-on
@@ -50,4 +57,3 @@ services:
       - /etc/localtime:/etc/localtime:ro
     ports:
       - '5000:5000'
-
