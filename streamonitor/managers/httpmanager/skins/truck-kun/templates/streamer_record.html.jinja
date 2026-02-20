@@ -56,7 +56,7 @@
             hx-swap="outerHTML"
             hx-disabled-elt="this"
             title="切割文件"
-            {{ 'disabled' if not streamer.recording }}>
+            hx-on:click="showToast('发送切割请求...', 'success', 1200)">
             <i class="icon feather icon-scissors"></i>
         </button>
     </td>
@@ -91,6 +91,13 @@
     <div class="error-modal">
         <span>{{ streamer_error_message }}</span>
         <button hx-delete="/clear" hx-swap="outerHTML" hx-target="closest .error-modal" hx-trigger="click">dismiss</button>
+    </div>
+</div>
+{% endif %}
+{% if toast_status is defined and toast_status != "hide" %}
+<div id="toast-notifications" hx-swap-oob="true">
+    <div class="toast {{ toast_status }}">
+        {{ toast_message }}
     </div>
 </div>
 {% endif %}

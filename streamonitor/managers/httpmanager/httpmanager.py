@@ -587,17 +587,32 @@ class HTTPManager(Manager):
             status_code = 500
             res = "Streamer not found"
             has_error = True
+            toast_status = "error"
+            toast_message = res
             if streamer is None:
-                status_code = 500
+                status_code = 404
             else:
                 res = self.do_cut(streamer, user, site)
                 if res == "OK":
                     has_error = False
                     status_code = 200
+                    toast_status = "success"
+                    toast_message = "Cut requested"
+                elif res in ("Streamer not running", "Streamer is not currently recording"):
+                    # Valid user action but current state doesn't allow cut.
+                    has_error = False
+                    status_code = 409
+                    toast_status = "warning"
+                    toast_message = res
+                else:
+                    toast_status = "error"
+                    toast_message = res
             context = {
                 'streamer': streamer,
                 'streamer_has_error': has_error,
                 'streamer_error_message': res,
+                'toast_status': toast_status,
+                'toast_message': toast_message,
                 'confirm_deletes': confirm_deletes(request.headers.get('User-Agent')),
             }
             return render_template('streamer_record.html.jinja', **context), status_code

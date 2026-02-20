@@ -172,8 +172,11 @@ class Bot(Thread):
 
     def _stop_recording_gracefully(self, reason="abnormal"):
         """Stop ongoing recording like pause button does, so stream/file is closed properly."""
-        if self.recording and self.stopDownload:
-            self.log(f"Stopping recording ({reason})...")
+        if self.stopDownload:
+            if self.recording:
+                self.log(f"Stopping recording ({reason})...")
+            else:
+                self.logger.info("Stopping downloader (%s)...", reason)
             self.stopDownload()
             self.recording = False
 
@@ -185,7 +188,7 @@ class Bot(Thread):
         """
         if not self.running:
             return "Streamer not running"
-        if not self.recording or not self.stopDownload:
+        if not self.stopDownload:
             return "Streamer is not currently recording"
         self._cut_recording_requested = True
         self._stop_recording_gracefully("manual cut")
