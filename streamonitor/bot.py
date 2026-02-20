@@ -195,7 +195,7 @@ class Bot(Thread):
         """
         Convert leftover .ts files (and remove them) in the streamer's output folder.
         - Successful remux: .ts/.tmp.ts -> .mp4 (copy streams) and delete the source .ts
-        - Failed remux: keep source .ts for manual recovery (do not delete user data)
+        - Failed/no-stream remux: keep source .ts and write sidecar *.invalid.txt for inspection
         No postprocess stderr/stdout log files are created.
         """
         if self.recording or self.stopDownload:
@@ -208,6 +208,7 @@ class Bot(Thread):
         converted = 0
         deleted = 0
         skipped = 0
+        invalid = 0
         # Also clean up old ffmpeg postprocess logs from previous failures.
         deleted_logs = 0
         deleted_dot_log = 0
@@ -227,7 +228,61 @@ class Bot(Thread):
                     return candidate
                 i += 1
 
-        def remux_ts_to_mp4(input_ts_path: str, output_mp4_path: str) -> bool:
+        def mark_problematic_file(path: str, reason: str):
+            marker_path = path + ".invalid.txt"
+            ts_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            try:
+                with open(marker_path, "a", encoding="utf-8") as f:
+                    f.write(f"[{ts_now}] {reason}\n")
+            except OSError:
+                pass
+
+        def remux_ts_to_mp4(input_ts_path: str, output_mp4_path: str) -> tuple[bool, bool]:
+            def iter_ffprobe_bins():
+                ffmpeg_bin = os.path.basename(FFMPEG_PATH)
+                ffmpeg_dir = os.path.dirname(FFMPEG_PATH)
+                candidates = []
+                if ffmpeg_bin.startswith("ffmpeg"):
+                    probe_bin = ffmpeg_bin.replace("ffmpeg", "ffprobe", 1)
+                    if ffmpeg_dir:
+                        candidates.append(os.path.join(ffmpeg_dir, probe_bin))
+                    else:
+                        candidates.append(probe_bin)
+                candidates.append("ffprobe")
+                seen = set()
+                for c in candidates:
+                    if c in seen:
+                        continue
+                    seen.add(c)
+                    yield c
+
+            def has_av_streams(path: str) -> bool | None:
+                for ffprobe_bin in iter_ffprobe_bins():
+                    try:
+                        res = subprocess.run(
+                            [
+                                ffprobe_bin,
+                                "-v", "error",
+                                "-show_entries", "stream=codec_type",
+                                "-of", "default=noprint_wrappers=1:nokey=1",
+                                path,
+                            ],
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL,
+                            text=True,
+                            check=False,
+                        )
+                    except OSError:
+                        continue
+                    if res.returncode != 0:
+                        return False
+                    for line in res.stdout.splitlines():
+                        if line.strip().lower() in {"audio", "video"}:
+                            return True
+                    return False
+                # ffprobe unavailable: keep old remux behavior.
+                return None
+
             def detect_demuxer(path: str) -> str | None:
                 try:
                     with open(path, "rb") as f:
@@ -249,6 +304,10 @@ class Bot(Thread):
                     seen.add(demuxer)
                     yield demuxer
 
+            has_stream = has_av_streams(input_ts_path)
+            if has_stream is False:
+                return False, True
+
             # Pass 1: normal stream copy remux.
             # Pass 2: tolerate minor corruption to recover as much as possible.
             for tolerant in (False, True):
@@ -269,14 +328,14 @@ class Bot(Thread):
                             stderr=subprocess.DEVNULL,
                             check=True,
                         )
-                        return True
+                        return True, False
                     except Exception:
                         try:
                             if os.path.exists(output_mp4_path):
                                 os.remove(output_mp4_path)
                         except OSError:
                             pass
-            return False
+            return False, False
 
         # Pass 1: delete old postprocess logs (user requested no logs)
         for entry in os.scandir(folder):
@@ -320,6 +379,9 @@ class Bot(Thread):
                 continue
 
             ts_path = entry.path
+            if os.path.exists(ts_path + ".invalid.txt"):
+                skipped += 1
+                continue
             # If the file is very recently modified, assume it might still be in use.
             try:
                 ts_stat = entry.stat()
@@ -337,7 +399,16 @@ class Bot(Thread):
 
             try:
                 # Remux (copy A/V) into MP4 container; if strict remux fails, try tolerant remux once.
-                if not remux_ts_to_mp4(ts_path, mp4_path):
+                remux_ok, no_stream = remux_ts_to_mp4(ts_path, mp4_path)
+                if not remux_ok:
+                    if no_stream:
+                        mark_problematic_file(
+                            ts_path,
+                            "ffprobe detected no audio/video streams during residual remux",
+                        )
+                        invalid += 1
+                        skipped += 1
+                        continue
                     raise RuntimeError("ffmpeg remux failed")
                 # Keep the converted file's mtime in sync with the original ts.
                 try:
@@ -351,6 +422,8 @@ class Bot(Thread):
                 converted += 1
             except Exception:
                 # Keep source .ts on failure to avoid silent data loss.
+                mark_problematic_file(ts_path, "ffmpeg remux failed during residual conversion")
+                invalid += 1
                 try:
                     if os.path.exists(mp4_path):
                         os.remove(mp4_path)
@@ -364,9 +437,9 @@ class Bot(Thread):
         except Exception:
             pass
 
-        if converted == 0 and deleted == 0 and skipped == 0 and deleted_logs == 0 and deleted_dot_log == 0 and deleted_title_txt == 0:
+        if converted == 0 and deleted == 0 and skipped == 0 and invalid == 0 and deleted_logs == 0 and deleted_dot_log == 0 and deleted_title_txt == 0:
             return "No ts files"
-        return f"OK (converted={converted}, deleted={deleted}, skipped={skipped}, deleted_logs={deleted_logs}, deleted_dot_log={deleted_dot_log}, deleted_title_txt={deleted_title_txt})"
+        return f"OK (converted={converted}, deleted={deleted}, skipped={skipped}, invalid={invalid}, deleted_logs={deleted_logs}, deleted_dot_log={deleted_dot_log}, deleted_title_txt={deleted_title_txt})"
 
     def run(self):
         while not self.quitting:

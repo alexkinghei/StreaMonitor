@@ -97,21 +97,53 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
     # fMP4 streams: cache init segment (ftyp+moov) so we can prepend it to new files and recovery remuxes.
     init_segment_bytes = [b'']
 
+    def _looks_like_mp4_fragment_bytes(data: bytes) -> bool:
+        if len(data) < 8:
+            return False
+        box_type = data[4:8]
+        return box_type in {b'ftyp', b'moov', b'moof', b'mdat', b'styp', b'sidx', b'free', b'uuid'}
+
+    def _looks_like_mpegts_bytes(data: bytes) -> bool:
+        if len(data) < 188:
+            return False
+        # Accept the common TS packet sizes (188/192/204) and allow offset starts.
+        for packet_size in (188, 192, 204):
+            max_offset = min(packet_size, 32)
+            for offset in range(max_offset):
+                if offset + (packet_size * 2) >= len(data):
+                    continue
+                if (
+                    data[offset] == 0x47 and
+                    data[offset + packet_size] == 0x47 and
+                    data[offset + (packet_size * 2)] == 0x47
+                ):
+                    return True
+        return False
+
     def _looks_like_mp4_with_header(path: str) -> bool:
         try:
             with open(path, 'rb') as f:
                 header = f.read(16)
-            return len(header) >= 8 and header[4:8] == b'ftyp'
+            return _looks_like_mp4_fragment_bytes(header)
         except OSError:
             return False
 
     def _looks_like_mpegts(path: str) -> bool:
         try:
             with open(path, 'rb') as f:
-                b0 = f.read(1)
-            return b0 == b'\x47'
+                header = f.read(4096)
+            return _looks_like_mpegts_bytes(header)
         except OSError:
             return False
+
+    def _mark_problematic_file(path: str, reason: str):
+        marker_path = path + '.invalid.txt'
+        ts_now = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
+        try:
+            with open(marker_path, 'a', encoding='utf-8') as f:
+                f.write(f'[{ts_now}] {reason}\n')
+        except OSError:
+            pass
 
     def _make_input_with_init_if_needed(input_path: str):
         """
@@ -186,11 +218,64 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
             seen.add(demuxer)
             yield demuxer
 
+    def _iter_ffprobe_bins():
+        ffmpeg_bin = os.path.basename(FFMPEG_PATH)
+        ffmpeg_dir = os.path.dirname(FFMPEG_PATH)
+        candidates = []
+        if ffmpeg_bin.startswith('ffmpeg'):
+            probe_bin = ffmpeg_bin.replace('ffmpeg', 'ffprobe', 1)
+            if ffmpeg_dir:
+                candidates.append(os.path.join(ffmpeg_dir, probe_bin))
+            else:
+                candidates.append(probe_bin)
+        candidates.append('ffprobe')
+        seen = set()
+        for c in candidates:
+            if c in seen:
+                continue
+            seen.add(c)
+            yield c
+
+    def _probe_has_av_streams(path: str):
+        """
+        Return:
+        - True: at least one audio/video stream
+        - False: no streams or probe failed
+        - None: ffprobe not available
+        """
+        for ffprobe_bin in _iter_ffprobe_bins():
+            try:
+                res = subprocess.run(
+                    [
+                        ffprobe_bin,
+                        '-v', 'error',
+                        '-show_entries', 'stream=codec_type',
+                        '-of', 'default=noprint_wrappers=1:nokey=1',
+                        path,
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                    check=False,
+                )
+            except OSError:
+                continue
+            if res.returncode != 0:
+                return False
+            for line in res.stdout.splitlines():
+                if line.strip().lower() in {'audio', 'video'}:
+                    return True
+            return False
+        return None
+
     def _run_recovery_remux(input_path: str, output_path: str, stderr_target) -> bool:
         """
         Retry remux with corruption-tolerant flags and multiple input demuxers.
         This recovers cases where ffmpeg mis-detects .ts/fMP4 fragments by extension/content.
         """
+        has_streams = _probe_has_av_streams(input_path)
+        if has_streams is False:
+            return False
         for demuxer in _iter_input_demuxers(input_path):
             cmd = [
                 FFMPEG_PATH, '-y',
@@ -232,6 +317,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
         outfile = [None]  # Use list to allow modification in nested function
         last_success = time.monotonic()
         current_file_has_init = [False]
+        current_file_has_media = [False]
         just_rotated = [False]  # True only after 800MB rotation so we prepend init only to new segment files
 
         def within_grace():
@@ -247,6 +333,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                 new_url = self.getVideoUrl()
                 if new_url:
                     url_ref[0] = new_url
+                    downloaded_set.clear()
                     self.logger.info('Refreshed playlist URL (stream may have changed bitrate/variants)')
                     return True
             except Exception as e:
@@ -274,6 +361,19 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                         return
                     
                     ffmpeg_input_path, input_tmp_path = _safe_make_input_with_init_if_needed(ts_file_path)
+                    has_streams = _probe_has_av_streams(ffmpeg_input_path)
+                    if has_streams is False:
+                        if input_tmp_path:
+                            try:
+                                os.remove(input_tmp_path)
+                            except OSError:
+                                pass
+                        _mark_problematic_file(
+                            ts_file_path,
+                            'ffprobe detected no audio/video streams during segment conversion',
+                        )
+                        self.logger.warning('Segment has no streams; kept for inspection: %s', ts_file_path)
+                        return
                     stdout = open(final_filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
                     stderr_file = open(stderr_path, 'w+')
                     output_str = '-c:a copy -c:v copy'
@@ -341,6 +441,10 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                             'Error converting segment (exit_code=%s): %s. Check %r for ffmpeg stderr.',
                             e.exit_code, e, stderr_path
                         )
+                    _mark_problematic_file(
+                        ts_file_path,
+                        f'ffmpeg segment remux failed (exit_code={getattr(e, "exit_code", "unknown")})',
+                    )
                     # Remove partial/corrupt mp4 if ffmpeg left one
                     try:
                         if os.path.exists(final_filename):
@@ -375,6 +479,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
             if segment_during_download:
                 # Check if we need to start a new segment
                 if current_file_size >= int(segment_size_bytes):
+                    prev_has_media = current_file_has_media[0]
                     if outfile[0] and not outfile[0].closed:
                         outfile[0].flush()
                         try:
@@ -382,7 +487,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                         except (OSError, AttributeError):
                             pass
                         outfile[0].close()
-                    
+
                     # Convert the completed segment to MP4 (like pause/resume logic)
                     prev_ts_file = current_file
                     # Generate final filename by replacing .ts with .mp4
@@ -390,21 +495,29 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                     if os.path.exists(prev_ts_file):
                         prev_sz = os.path.getsize(prev_ts_file)
                         if prev_sz > 0:
-                            segment_files.append((prev_ts_file, prev_final_filename))
-                            t = convert_segment_to_mp4(prev_ts_file, prev_final_filename)
-                            if t is not None:
-                                segment_convert_threads.append(t)
+                            if prev_has_media:
+                                segment_files.append((prev_ts_file, prev_final_filename))
+                                t = convert_segment_to_mp4(prev_ts_file, prev_final_filename)
+                                if t is not None:
+                                    segment_convert_threads.append(t)
+                            else:
+                                _mark_problematic_file(
+                                    prev_ts_file,
+                                    'segment rotated without media payload (init-only or invalid chunks)',
+                                )
+                                self.logger.warning('Segment kept for inspection (no media payload): %s', prev_ts_file)
                         else:
                             try:
                                 os.remove(prev_ts_file)
                             except OSError:
                                 pass
-                    
+
                     # Generate new filename with timestamp (like pause/resume)
                     new_filename = self.genOutFilename(create_dir=True)
                     current_file = new_filename[:-len('.' + CONTAINER)] + '.ts'
                     current_file_size = 0
                     current_file_has_init[0] = False
+                    current_file_has_media[0] = False
                     just_rotated[0] = True
                 if outfile[0] is None or outfile[0].closed:
                     # Use wb so a rare filename collision never appends stale bytes from an older file.
@@ -493,6 +606,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                             self.logger.warning('HLS chunk status %s (transient, retrying)', m.status_code)
                             sleep(float(HLS_RETRY_SLEEP_SECONDS))
                             break
+                        error = True
                         return
                     # Reject incomplete chunk (e.g. stream ended mid-transfer / private show) so we don't
                     # write a truncated fMP4 fragment and corrupt the file (ffmpeg "error reading header").
@@ -510,8 +624,14 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                                     len(m.content), expected
                                 )
                                 if segment_during_download:
-                                    # Don't write more to this file — return so we close and convert a valid segment.
-                                    return
+                                    if current_file:
+                                        _mark_problematic_file(
+                                            current_file,
+                                            f'incomplete chunk detected: got={len(m.content)} expected={expected}',
+                                        )
+                                    # Force rotation on next write and continue download.
+                                    current_file_size = int(segment_size_bytes)
+                                    break
                                 if within_grace():
                                     sleep(float(HLS_RETRY_SLEEP_SECONDS))
                                 break
@@ -521,6 +641,25 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                     # - keep only the latest init bytes (don't append forever)
                     # - write init only once per output file to avoid duplicate moov atoms
                     if segment_during_download and is_init_chunk:
+                        if not _looks_like_mp4_fragment_bytes(m.content):
+                            if chunk_key_was_new:
+                                downloaded_set.discard(chunk_key)
+                            self.logger.warning(
+                                'Rejected suspicious HLS init chunk (uri=%s, bytes=%s)',
+                                chunk_uri, len(m.content)
+                            )
+                            if current_file:
+                                _mark_problematic_file(
+                                    current_file,
+                                    f'rejected suspicious init chunk: {chunk_uri}',
+                                )
+                            if within_grace():
+                                if try_refresh_url():
+                                    break
+                                sleep(float(HLS_RETRY_SLEEP_SECONDS))
+                                break
+                            error = True
+                            return
                         if playlist_init_parts is not None:
                             playlist_init_parts[i] = m.content
                             if all(part is not None for part in playlist_init_parts):
@@ -539,15 +678,47 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                         if self.stopDownloadFlag:
                             return
                         continue
+                    playlist_uses_fmp4 = n_init > 0
+                    if playlist_uses_fmp4:
+                        payload_ok = _looks_like_mp4_fragment_bytes(m.content)
+                    else:
+                        payload_ok = _looks_like_mpegts_bytes(m.content)
+                    if not payload_ok:
+                        if chunk_key_was_new:
+                            downloaded_set.discard(chunk_key)
+                        self.logger.warning(
+                            'Rejected suspicious HLS media chunk (uri=%s, bytes=%s, mode=%s)',
+                            chunk_uri, len(m.content), 'fmp4' if playlist_uses_fmp4 else 'mpegts'
+                        )
+                        if segment_during_download and current_file:
+                            _mark_problematic_file(
+                                current_file,
+                                f'rejected suspicious media chunk: {chunk_uri}',
+                            )
+                            # Close this segment now so bad data cannot contaminate it,
+                            # but keep download loop alive.
+                            current_file_size = int(segment_size_bytes)
+                            break
+                        if within_grace():
+                            if try_refresh_url():
+                                break
+                            sleep(float(HLS_RETRY_SLEEP_SECONDS))
+                            break
+                        error = True
+                        return
                     file_handle = get_output_file()
                     file_handle.write(m.content)
                     last_success = time.monotonic()
                     if segment_during_download:
                         current_file_size += len(m.content)
+                        current_file_has_media[0] = True
                     if self.stopDownloadFlag:
                         return
                 if not did_download:
                     sleep(10)
+        except Exception as e:
+            error = True
+            self.logger.error('Unexpected error in HLS download loop: %s', e, exc_info=True)
         finally:
             if outfile[0] and not outfile[0].closed:
                 try:
@@ -587,27 +758,47 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                 stderr_file = None
                 input_tmp_path = None
                 try:
+                    if not current_file_has_media[0]:
+                        _mark_problematic_file(
+                            current_file,
+                            'final segment has no media payload (init-only or invalid chunks)',
+                        )
+                        self.logger.warning('Final segment kept for inspection (no media payload): %s', current_file)
+                        return successful_outputs[0] > 0
                     # Always write stderr log so it can be inspected when conversion fails (e.g. exit 254)
                     ffmpeg_input_path, input_tmp_path = _safe_make_input_with_init_if_needed(current_file)
-                    stdout = open(final_filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
-                    stderr_file = open(stderr_path, 'w+')
-                    output_str = '-c:a copy -c:v copy'
-                    ff = FFmpeg(executable=FFMPEG_PATH, inputs={ffmpeg_input_path: None}, outputs={final_filename: output_str})
-                    ff.run(stdout=stdout, stderr=stderr_file)
-                    stderr_file.close()
-                    stderr_file = None
-                    try:
-                        os.remove(stderr_path)
-                    except OSError:
-                        pass
-                    if input_tmp_path:
+                    has_streams = _probe_has_av_streams(ffmpeg_input_path)
+                    if has_streams is False:
+                        if input_tmp_path:
+                            try:
+                                os.remove(input_tmp_path)
+                            except OSError:
+                                pass
+                        _mark_problematic_file(
+                            current_file,
+                            'ffprobe detected no audio/video streams for final segment conversion',
+                        )
+                        self.logger.warning('Final segment has no streams; kept for inspection: %s', current_file)
+                    else:
+                        stdout = open(final_filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
+                        stderr_file = open(stderr_path, 'w+')
+                        output_str = '-c:a copy -c:v copy'
+                        ff = FFmpeg(executable=FFMPEG_PATH, inputs={ffmpeg_input_path: None}, outputs={final_filename: output_str})
+                        ff.run(stdout=stdout, stderr=stderr_file)
+                        stderr_file.close()
+                        stderr_file = None
                         try:
-                            os.remove(input_tmp_path)
+                            os.remove(stderr_path)
                         except OSError:
                             pass
-                    os.remove(current_file)
-                    _rename_mp4_by_title(final_filename, self.logger)
-                    successful_outputs[0] += 1
+                        if input_tmp_path:
+                            try:
+                                os.remove(input_tmp_path)
+                            except OSError:
+                                pass
+                        os.remove(current_file)
+                        _rename_mp4_by_title(final_filename, self.logger)
+                        successful_outputs[0] += 1
                 except FFRuntimeError as e:
                     if stderr_file:
                         try:
@@ -653,6 +844,11 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                             pass
                     if (not recovered) and e.exit_code:
                         self.logger.error(f'Error converting final segment (exit_code=%s): %s. Check {stderr_path!r} for ffmpeg stderr.', e.exit_code, e)
+                    if not recovered:
+                        _mark_problematic_file(
+                            current_file,
+                            f'ffmpeg final segment remux failed (exit_code={getattr(e, "exit_code", "unknown")})',
+                        )
                 except Exception as e:
                     if stderr_file:
                         try:
@@ -692,6 +888,14 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
             return False
 
         try:
+            has_streams = _probe_has_av_streams(tmpfilename)
+            if has_streams is False:
+                _mark_problematic_file(
+                    tmpfilename,
+                    'ffprobe detected no audio/video streams during final conversion',
+                )
+                self.logger.warning('Temp file has no streams; kept for inspection: %s', tmpfilename)
+                return False
             stdout = open(filename + '.postprocess_stdout.log', 'w+') if DEBUG else subprocess.DEVNULL
             stderr = open(filename + '.postprocess_stderr.log', 'w+') if DEBUG else subprocess.DEVNULL
             output_str = '-c:a copy -c:v copy'
@@ -713,6 +917,10 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
             except Exception:
                 if e.exit_code:
                     self.logger.error('Final remux failed (exit_code=%s)', e.exit_code)
+                _mark_problematic_file(
+                    tmpfilename,
+                    f'ffmpeg final remux failed (exit_code={getattr(e, "exit_code", "unknown")})',
+                )
                 return False
 
     return True
