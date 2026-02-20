@@ -94,6 +94,9 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
     segment_files = []  # Track all segment files for final conversion
     segment_convert_threads = []  # Background conversion threads to join before return
     successful_outputs = [0]
+    # Track whether current segment has at least one media payload chunk.
+    # Must live in outer scope because final-segment conversion runs outside execute().
+    current_file_has_media = [False]
     # fMP4 streams: cache init segment (ftyp+moov) so we can prepend it to new files and recovery remuxes.
     init_segment_bytes = [b'']
 
@@ -317,7 +320,6 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
         outfile = [None]  # Use list to allow modification in nested function
         last_success = time.monotonic()
         current_file_has_init = [False]
-        current_file_has_media = [False]
         just_rotated = [False]  # True only after 800MB rotation so we prepend init only to new segment files
 
         def within_grace():
