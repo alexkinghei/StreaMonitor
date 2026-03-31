@@ -199,6 +199,16 @@ class Bot(Thread):
                         offline_time = 0
                         if self.sc == Status.PUBLIC or (self.sc == Status.PRIVATE and self.record_private):
                             if self.sc == Status.PRIVATE:
+                                try:
+                                    # Bulk updates may only give a coarse status. Refresh detailed room data
+                                    # before attempting a private recording so site-specific private fields
+                                    # and debug logs are populated from the single-room endpoint.
+                                    refreshed_status = self.getStatus()
+                                    if refreshed_status is not None:
+                                        self.sc = refreshed_status
+                                except Exception as e:
+                                    self.logger.exception(e)
+                            if self.sc == Status.PRIVATE:
                                 self.log('Attempting to record private show')
                             if self.cookie_update_interval > 0 and self.cookieUpdater is not None:
                                 def update_cookie():
