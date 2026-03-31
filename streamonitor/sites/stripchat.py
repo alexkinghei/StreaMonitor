@@ -10,9 +10,9 @@ import m3u8
 from urllib.parse import urljoin
 
 from streamonitor.bot import RoomIdBot
-from streamonitor.downloaders.hls import getVideoNativeHLS
+from streamonitor.downloaders.hls import getVideoAdaptiveHLS, getVideoNativeHLS
 from streamonitor.enums import Status, Gender, COUNTRIES
-from parameters import STRIPCHAT_COOKIE, STRIPCHAT_PREFER_AV1, STRIPCHAT_PREFER_FMP4, WANTED_RESOLUTION, WANTED_RESOLUTION_PREFERENCE
+from parameters import STRIPCHAT_COOKIE, STRIPCHAT_PREFER_AV1, STRIPCHAT_PREFER_FMP4, STRIPCHAT_ADAPTIVE_SWITCH, STRIPCHAT_ADAPTIVE_SWITCH_INTERVAL, WANTED_RESOLUTION, WANTED_RESOLUTION_PREFERENCE
 
 
 class StripChat(RoomIdBot):
@@ -54,10 +54,21 @@ class StripChat(RoomIdBot):
         super().__init__(username, room_id)
         self._id = None
         self.vr = False
+        self._recording_master_url = None
         if STRIPCHAT_COOKIE:
             self.headers['Cookie'] = STRIPCHAT_COOKIE
             self.session.headers.update({'Cookie': STRIPCHAT_COOKIE})
-        self.getVideo = lambda _, url, filename: getVideoNativeHLS(self, url, filename, StripChat.m3u_decoder)
+        if STRIPCHAT_ADAPTIVE_SWITCH and type(self) is StripChat:
+            self.getVideo = lambda _, url, filename: getVideoAdaptiveHLS(
+                self,
+                url,
+                filename,
+                StripChat.m3u_decoder,
+                self.getAdaptiveVideoSource,
+                STRIPCHAT_ADAPTIVE_SWITCH_INTERVAL
+            )
+        else:
+            self.getVideo = lambda _, url, filename: getVideoNativeHLS(self, url, filename, StripChat.m3u_decoder)
 
     @classmethod
     def getInitialData(cls):
@@ -135,8 +146,35 @@ class StripChat(RoomIdBot):
     def getWebsiteURL(self):
         return "https://stripchat.com/" + self.username
 
+    def _build_master_playlist_url(self):
+        return "https://edge-hls.{host}/hls/{id}{vr}/master/{id}{vr}{auto}.m3u8".format(
+            host='doppiocdn.' + random.choice(['org', 'com', 'net']),
+            id=self.room_id,
+            vr='_vr' if self.vr else '',
+            auto='_auto' if not self.vr else ''
+        )
+
+    def _format_selected_source(self, selected_source):
+        width, height = selected_source['resolution']
+        frame_rate = selected_source.get('frame_rate')
+        codecs = selected_source.get('codecs') or 'unknown codec'
+        stream_type = 'fMP4' if selected_source.get('is_fmp4') else 'HLS'
+        if height != 0:
+            frame_rate_text = f" {frame_rate}fps" if frame_rate not in (None, 0) else ''
+            return f"{width}x{height}{frame_rate_text} [{codecs}] ({stream_type})"
+        return f"source [{codecs}] ({stream_type})"
+
+    def _finalize_selected_source(self, selected_source, log_selection=True):
+        finalized_source = dict(selected_source)
+        finalized_source['url'] = urljoin(finalized_source['master_url'], finalized_source['url'])
+        self._recording_master_url = finalized_source['master_url']
+        if log_selection:
+            self.logger.info(f"Selected {self._format_selected_source(finalized_source)}")
+        return finalized_source
+
     def getVideoUrl(self):
-        sources = self.getPlaylistVariants(None)
+        self._recording_master_url = self._build_master_playlist_url()
+        sources = self.getPlaylistVariants(self._recording_master_url)
         if not sources:
             self.logger.error("No available sources")
             return None
@@ -146,16 +184,17 @@ class StripChat(RoomIdBot):
             self.logger.error("Couldn't select a resolution")
             return None
 
-        width, height = selected_source['resolution']
-        frame_rate = selected_source.get('frame_rate')
-        codecs = selected_source.get('codecs') or 'unknown codec'
-        stream_type = 'fMP4' if selected_source.get('is_fmp4') else 'HLS'
-        if height != 0:
-            frame_rate_text = f" {frame_rate}fps" if frame_rate not in (None, 0) else ''
-            self.logger.info(f"Selected {width}x{height}{frame_rate_text} [{codecs}] ({stream_type})")
-        else:
-            self.logger.info(f"Selected source [{codecs}] ({stream_type})")
-        return selected_source['url']
+        return self._finalize_selected_source(selected_source)['url']
+
+    def getAdaptiveVideoSource(self):
+        master_url = self._recording_master_url or self._build_master_playlist_url()
+        sources = self.getPlaylistVariants(master_url)
+        if not sources:
+            return None
+        selected_source = self._select_preferred_variant(sources)
+        if selected_source is None:
+            return None
+        return self._finalize_selected_source(selected_source, log_selection=False)
 
     @staticmethod
     def _is_av1_variant(source):
@@ -247,12 +286,8 @@ class StripChat(RoomIdBot):
         return None
 
     def getPlaylistVariants(self, url):
-        url = "https://edge-hls.{host}/hls/{id}{vr}/master/{id}{vr}{auto}.m3u8".format(
-                host='doppiocdn.' + random.choice(['org', 'com', 'net']),
-                id=self.room_id,
-                vr='_vr' if self.vr else '',
-                auto='_auto' if not self.vr else ''
-            )
+        if not url:
+            url = self._build_master_playlist_url()
         result = self.session.get(url, headers=self.headers, cookies=self.cookies)
         m3u8_doc = result.content.decode("utf-8")
         psch, pkey, pdkey = StripChat._getMouflonFromM3U(m3u8_doc)
