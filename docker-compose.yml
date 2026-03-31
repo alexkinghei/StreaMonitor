@@ -1,10 +1,10 @@
 services:
   streamonitor:
 # If you want to build locally, use this instead the image line below:
-#    build: ./
-#    image: streamonitor:latest
+    build: ./
+    # image: streamonitor:latest
 
-    image: ghcr.io/lossless1024/streamonitor:latest
+    # image: ghcr.io/lossless1024/streamonitor:latest
 
     restart: unless-stopped
     environment:
@@ -26,6 +26,7 @@ services:
       # set refresh frequency on list page
       STRMNTR_LIST_FREQ: "30"
     volumes:
+      - ./.streamonitor.env:/app/.env:ro
       - ./downloads:/app/downloads
       - ./config.json:/app/config.json
       - ./stripchat_mouflon_keys.json:/app/stripchat_mouflon_keys.json
@@ -33,4 +34,3 @@ services:
       - /etc/localtime:/etc/localtime:ro
     ports:
       - '5000:5000'
-

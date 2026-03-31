@@ -14,6 +14,16 @@ def getVideoFfmpeg(self, url, filename):
         '-user_agent', self.headers['User-Agent']
     ]
 
+    extra_headers = []
+    for header_name, header_value in self.headers.items():
+        if header_name.lower() == 'user-agent' or header_value in (None, ''):
+            continue
+        extra_headers.append(f'{header_name}: {header_value}')
+    if extra_headers:
+        cmd.extend([
+            '-headers', '\r\n'.join(extra_headers) + '\r\n'
+        ])
+
     if type(self.cookies) is requests.cookies.RequestsCookieJar:
         cookies_text = ''
         for cookie in self.cookies:

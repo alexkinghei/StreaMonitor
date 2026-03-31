@@ -64,6 +64,7 @@ class Bot(Thread):
         self.username = username
         self.logger = self.getLogger()
 
+        self.headers = dict(self.headers)
         self.session = requests.Session()
         self.session.headers.update(self.headers)
         self.cookies = None

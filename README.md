@@ -99,6 +99,8 @@ Simply start it in the folder with `docker-compose up`.
 
 You can set some parameters in the [parameters.py](parameters.py).
 
+To forward a browser Cookie header for StripChat and StripChat VR requests/downloads, set `STRMNTR_STRIPCHAT_COOKIE` in your environment or `.env` file.
+
 You also have to add decryption keys yourself for StripChat in the `stripchat_mouflon_keys.json` file.
 
 ## Disclaimer

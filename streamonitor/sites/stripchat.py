@@ -10,6 +10,7 @@ import hashlib
 from streamonitor.bot import RoomIdBot
 from streamonitor.downloaders.hls import getVideoNativeHLS
 from streamonitor.enums import Status, Gender, COUNTRIES
+from parameters import STRIPCHAT_COOKIE
 
 
 class StripChat(RoomIdBot):
@@ -51,6 +52,9 @@ class StripChat(RoomIdBot):
         super().__init__(username, room_id)
         self._id = None
         self.vr = False
+        if STRIPCHAT_COOKIE:
+            self.headers['Cookie'] = STRIPCHAT_COOKIE
+            self.session.headers.update({'Cookie': STRIPCHAT_COOKIE})
         self.getVideo = lambda _, url, filename: getVideoNativeHLS(self, url, filename, StripChat.m3u_decoder)
 
     @classmethod
@@ -158,7 +162,8 @@ class StripChat(RoomIdBot):
     def _getStatusData(self, username):
         r = self.session.get(
             f'https://stripchat.com/api/front/v2/models/username/{username}/cam?uniq={StripChat.uniq()}',
-            headers=self.headers
+            headers=self.headers,
+            cookies=self.cookies
         )
 
         try:
