@@ -54,6 +54,53 @@ def _get_filename_suffix(self):
     return ''
 
 
+def _cookie_debug_summary(session):
+    summary = []
+    cookie_jar = getattr(session, 'cookies', None)
+    if cookie_jar is None:
+        return summary
+    try:
+        for cookie in cookie_jar:
+            summary.append({
+                'name': cookie.name,
+                'domain': cookie.domain,
+                'path': cookie.path,
+            })
+    except Exception:
+        pass
+    return summary
+
+
+def _log_http_failure(self, response, request_url):
+    self.logger.warning(f'Playlist request failed with HTTP {response.status_code}: {request_url}')
+    if not DEBUG:
+        return
+
+    try:
+        body_preview = response.text[:500]
+    except Exception:
+        body_preview = '<unavailable>'
+
+    try:
+        headers_preview = dict(response.headers)
+    except Exception:
+        headers_preview = {}
+
+    try:
+        request_headers_preview = dict(response.request.headers)
+    except Exception:
+        request_headers_preview = {}
+
+    debug_payload = {
+        'url': request_url,
+        'status_code': response.status_code,
+        'request_headers': request_headers_preview,
+        'response_headers': headers_preview,
+        'body_preview': body_preview,
+    }
+    self.logger.info(f'Playlist failure details: {debug_payload}')
+
+
 def _build_output_target(self, filename):
     basefilename = filename[:-len('.' + CONTAINER)]
     suffix = _get_filename_suffix(self)
@@ -178,7 +225,8 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                 downloaded_in_iteration = False
                 r = session.get(url, headers=self.headers, cookies=self.cookies)
                 if r.status_code != 200:
-                    self.logger.warning(f'Playlist request failed with HTTP {r.status_code}: {url}')
+                    _log_http_failure(self, r, url)
+                    self.logger.info(f'Playlist failure session cookies: {_cookie_debug_summary(session)}')
                     return
                 content = r.content.decode("utf-8")
                 if m3u_processor:
@@ -323,7 +371,8 @@ def getVideoAdaptiveHLS(self, url, filename, m3u_processor=None, variant_selecto
 
                 r = session.get(current_variant_url, headers=self.headers, cookies=self.cookies)
                 if r.status_code != 200:
-                    self.logger.warning(f'Playlist request failed with HTTP {r.status_code}: {current_variant_url}')
+                    _log_http_failure(self, r, current_variant_url)
+                    self.logger.info(f'Playlist failure session cookies: {_cookie_debug_summary(session)}')
                     return
                 content = r.content.decode("utf-8")
                 if m3u_processor:
