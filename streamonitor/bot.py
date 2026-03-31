@@ -198,6 +198,8 @@ class Bot(Thread):
                     elif self.sc == Status.PUBLIC or self.sc == Status.PRIVATE:
                         offline_time = 0
                         if self.sc == Status.PUBLIC or (self.sc == Status.PRIVATE and self.record_private):
+                            if self.sc == Status.PRIVATE:
+                                self.log('Attempting to record private show')
                             if self.cookie_update_interval > 0 and self.cookieUpdater is not None:
                                 def update_cookie():
                                     while self.sc in (Status.PUBLIC, Status.PRIVATE) and not self.quitting and self.running:
