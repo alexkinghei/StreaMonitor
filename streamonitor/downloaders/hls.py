@@ -28,17 +28,15 @@ if not _http_lib:
 
 
 def _create_download_session(self):
+    source_session = getattr(self, 'session', None)
+    if source_session is not None:
+        if hasattr(self, 'headers') and isinstance(self.headers, dict):
+            source_session.headers.update(self.headers)
+        return source_session
+
     session = requests.Session()
     if hasattr(self, 'headers') and isinstance(self.headers, dict):
         session.headers.update(self.headers)
-
-    source_session = getattr(self, 'session', None)
-    source_cookies = getattr(source_session, 'cookies', None)
-    if source_cookies is not None:
-        try:
-            session.cookies.update(source_cookies)
-        except Exception:
-            pass
 
     extra_cookies = getattr(self, 'cookies', None)
     if extra_cookies is not None:
@@ -307,13 +305,6 @@ def getVideoAdaptiveHLS(self, url, filename, m3u_processor=None, variant_selecto
         try:
             while not self.stopDownloadFlag:
                 now = monotonic()
-                source_session = getattr(self, 'session', None)
-                source_cookies = getattr(source_session, 'cookies', None)
-                if source_cookies is not None:
-                    try:
-                        session.cookies.update(source_cookies)
-                    except Exception:
-                        pass
                 if variant_selector is not None and (current_variant_info is None or now - last_switch_check >= switch_check_interval):
                     candidate_variant = variant_selector()
                     last_switch_check = now
