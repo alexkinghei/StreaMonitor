@@ -18,6 +18,12 @@ class StripChatVR(StripChat):
         super().__init__(username, room_id)
         self.stopDownloadFlag = False
         self.vr = True
+        self.headers['Origin'] = 'https://vr.stripchat.com'
+        self.headers['Referer'] = self.getWebsiteURL()
+        self.session.headers.update({
+            'Origin': self.headers['Origin'],
+            'Referer': self.headers['Referer'],
+        })
 
     @property
     def filename_extra_suffix(self):

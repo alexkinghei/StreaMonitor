@@ -156,6 +156,9 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
             while not self.stopDownloadFlag:
                 downloaded_in_iteration = False
                 r = session.get(url, headers=self.headers, cookies=self.cookies)
+                if r.status_code != 200:
+                    self.logger.warning(f'Playlist request failed with HTTP {r.status_code}: {url}')
+                    return
                 content = r.content.decode("utf-8")
                 if m3u_processor:
                     processed_content = m3u_processor(content)
@@ -163,6 +166,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                         content = processed_content
                 chunklist = m3u8.loads(content)
                 if len(chunklist.segments) == 0:
+                    self.logger.warning(f'Playlist returned no media segments: {url}')
                     return
 
                 if outfile is None:
@@ -183,6 +187,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                     self.debug('Downloading ' + chunk_uri)
                     m = session.get(chunk_uri, headers=self.headers, cookies=self.cookies)
                     if m.status_code != 200:
+                        self.logger.warning(f'Media segment request failed with HTTP {m.status_code}: {chunk_uri}')
                         return
                     outfile.write(m.content)
                     if self.stopDownloadFlag:
@@ -296,6 +301,9 @@ def getVideoAdaptiveHLS(self, url, filename, m3u_processor=None, variant_selecto
                             current_variant_info = candidate_variant
 
                 r = session.get(current_variant_url, headers=self.headers, cookies=self.cookies)
+                if r.status_code != 200:
+                    self.logger.warning(f'Playlist request failed with HTTP {r.status_code}: {current_variant_url}')
+                    return
                 content = r.content.decode("utf-8")
                 if m3u_processor:
                     processed_content = m3u_processor(content)
@@ -303,6 +311,7 @@ def getVideoAdaptiveHLS(self, url, filename, m3u_processor=None, variant_selecto
                         content = processed_content
                 chunklist = m3u8.loads(content)
                 if len(chunklist.segments) == 0:
+                    self.logger.warning(f'Playlist returned no media segments: {current_variant_url}')
                     return
 
                 if current_part_handle is None:
@@ -324,6 +333,7 @@ def getVideoAdaptiveHLS(self, url, filename, m3u_processor=None, variant_selecto
                     self.debug('Downloading ' + chunk_url)
                     m = session.get(chunk_url, headers=self.headers, cookies=self.cookies)
                     if m.status_code != 200:
+                        self.logger.warning(f'Media segment request failed with HTTP {m.status_code}: {chunk_url}')
                         return
                     current_part_handle.write(m.content)
                     if self.stopDownloadFlag:

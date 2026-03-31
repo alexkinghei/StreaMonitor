@@ -56,6 +56,12 @@ class StripChat(RoomIdBot):
         self.vr = False
         self._recording_master_url = None
         self.record_private = STRIPCHAT_RECORD_PRIVATE
+        self.headers['Origin'] = 'https://stripchat.com'
+        self.headers['Referer'] = self.getWebsiteURL()
+        self.session.headers.update({
+            'Origin': self.headers['Origin'],
+            'Referer': self.headers['Referer'],
+        })
         if STRIPCHAT_COOKIE:
             self.headers['Cookie'] = STRIPCHAT_COOKIE
             self.session.headers.update({'Cookie': STRIPCHAT_COOKIE})
