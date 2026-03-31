@@ -342,6 +342,23 @@ class StripChat(RoomIdBot):
         self.lastInfo = {'model': data['user']['user']}
         if isinstance(data['cam'], dict):
             self.lastInfo |= data['cam']
+
+        status = self.lastInfo['model'].get('status')
+        if status in self._PRIVATE_STATUSES:
+            debug_payload = {
+                'status': status,
+                'cam_keys': sorted(list(data.get('cam', {}).keys())) if isinstance(data.get('cam'), dict) else [],
+                'broadcastSettings_keys': sorted(list(self.lastInfo.get('broadcastSettings', {}).keys())) if isinstance(self.lastInfo.get('broadcastSettings'), dict) else [],
+                'lastInfo_url_like_keys': sorted(
+                    key for key, value in self.lastInfo.items()
+                    if isinstance(value, str) and ('http' in value or 'm3u8' in value or 'wss' in value)
+                ),
+                'cam_url_like_values': {
+                    key: value for key, value in data.get('cam', {}).items()
+                    if isinstance(value, str) and ('http' in value or 'm3u8' in value or 'wss' in value)
+                } if isinstance(data.get('cam'), dict) else {},
+            }
+            self.debug(f'Private status payload: {json.dumps(debug_payload, ensure_ascii=True, sort_keys=True)}')
         return None
 
     def getRoomIdFromUsername(self, username):
