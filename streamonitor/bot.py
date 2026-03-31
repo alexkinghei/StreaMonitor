@@ -293,7 +293,8 @@ class Bot(Thread):
                 'url': playlist.uri,
                 'resolution': resolution,
                 'frame_rate': stream_info.frame_rate,
-                'bandwidth': stream_info.bandwidth
+                'bandwidth': stream_info.bandwidth,
+                'codecs': getattr(stream_info, 'codecs', None)
             })
 
         if not variant_m3u8.is_variant and len(sources) >= 1:

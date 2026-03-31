@@ -26,22 +26,35 @@ if not _http_lib:
 def getVideoNativeHLS(self, url, filename, m3u_processor=None):
     self.stopDownloadFlag = False
     error = False
-    tmpfilename = filename[:-len('.' + CONTAINER)] + '.tmp.ts'
     session = requests.Session()
 
     def execute():
         nonlocal error
         downloaded_list = []
-        with open(tmpfilename, 'wb') as outfile:
-            did_download = False
+        did_download = False
+        tmpfilename = None
+        outfile = None
+        try:
             while not self.stopDownloadFlag:
                 r = session.get(url, headers=self.headers, cookies=self.cookies)
                 content = r.content.decode("utf-8")
                 if m3u_processor:
-                    content = m3u_processor(content)
+                    processed_content = m3u_processor(content)
+                    if processed_content is not None:
+                        content = processed_content
                 chunklist = m3u8.loads(content)
                 if len(chunklist.segments) == 0:
                     return
+
+                if outfile is None:
+                    uses_fmp4 = len(chunklist.segment_map) > 0 or any(
+                        chunk.uri.endswith(('.m4s', '.mp4', '.cmfv', '.cmfa'))
+                        for chunk in chunklist.segments
+                    )
+                    tmp_extension = '.tmp.mp4' if uses_fmp4 else '.tmp.ts'
+                    tmpfilename = filename[:-len('.' + CONTAINER)] + tmp_extension
+                    outfile = open(tmpfilename, 'wb')
+
                 for chunk in chunklist.segment_map + chunklist.segments:
                     if chunk.uri in downloaded_list:
                         continue
@@ -59,6 +72,9 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
                         return
                 if not did_download:
                     sleep(10)
+        finally:
+            if outfile is not None:
+                outfile.close()
 
     def terminate():
         self.stopDownloadFlag = True
@@ -72,6 +88,9 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
     if error:
         return False
 
+    tmpfilename = filename[:-len('.' + CONTAINER)] + '.tmp.mp4'
+    if not os.path.exists(tmpfilename):
+        tmpfilename = filename[:-len('.' + CONTAINER)] + '.tmp.ts'
     if not os.path.exists(tmpfilename):
         return False
 

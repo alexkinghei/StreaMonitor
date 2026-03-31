@@ -6,11 +6,13 @@ import re
 import requests
 import base64
 import hashlib
+import m3u8
+from urllib.parse import urljoin
 
 from streamonitor.bot import RoomIdBot
 from streamonitor.downloaders.hls import getVideoNativeHLS
 from streamonitor.enums import Status, Gender, COUNTRIES
-from parameters import STRIPCHAT_COOKIE
+from parameters import STRIPCHAT_COOKIE, STRIPCHAT_PREFER_AV1, STRIPCHAT_PREFER_FMP4, WANTED_RESOLUTION, WANTED_RESOLUTION_PREFERENCE
 
 
 class StripChat(RoomIdBot):
@@ -134,7 +136,115 @@ class StripChat(RoomIdBot):
         return "https://stripchat.com/" + self.username
 
     def getVideoUrl(self):
-        return self.getWantedResolutionPlaylist(None)
+        sources = self.getPlaylistVariants(None)
+        if not sources:
+            self.logger.error("No available sources")
+            return None
+
+        selected_source = self._select_preferred_variant(sources)
+        if selected_source is None:
+            self.logger.error("Couldn't select a resolution")
+            return None
+
+        width, height = selected_source['resolution']
+        frame_rate = selected_source.get('frame_rate')
+        codecs = selected_source.get('codecs') or 'unknown codec'
+        stream_type = 'fMP4' if selected_source.get('is_fmp4') else 'HLS'
+        if height != 0:
+            frame_rate_text = f" {frame_rate}fps" if frame_rate not in (None, 0) else ''
+            self.logger.info(f"Selected {width}x{height}{frame_rate_text} [{codecs}] ({stream_type})")
+        else:
+            self.logger.info(f"Selected source [{codecs}] ({stream_type})")
+        return selected_source['url']
+
+    @staticmethod
+    def _is_av1_variant(source):
+        codecs = (source.get('codecs') or '').lower()
+        return 'av01' in codecs or 'av1' in codecs
+
+    def _inspect_variant_playlist(self, variant):
+        if 'is_fmp4' in variant:
+            return variant
+
+        inspected_variant = dict(variant)
+        inspected_variant['is_fmp4'] = False
+        try:
+            playlist_url = urljoin(variant.get('master_url'), variant['url'])
+            result = self.session.get(playlist_url, headers=self.headers, cookies=self.cookies, timeout=10)
+            playlist_text = result.content.decode("utf-8")
+            decoded_text = StripChat.m3u_decoder(playlist_text)
+            if decoded_text is not None:
+                playlist_text = decoded_text
+            playlist = m3u8.loads(playlist_text)
+            inspected_variant['is_fmp4'] = len(playlist.segment_map) > 0 or any(
+                segment.uri.endswith(('.m4s', '.mp4', '.cmfv', '.cmfa'))
+                for segment in playlist.segments
+            )
+        except Exception as e:
+            self.debug(f'Failed to inspect variant playlist: {e}')
+
+        return inspected_variant
+
+    @staticmethod
+    def _select_source_for_resolution(sources):
+        sources = [dict(source) for source in sources]
+        for source in sources:
+            width, height = source['resolution']
+            if width < height:
+                source['resolution_diff'] = width - WANTED_RESOLUTION
+            else:
+                source['resolution_diff'] = height - WANTED_RESOLUTION
+
+        sources.sort(key=lambda a: abs(a['resolution_diff']))
+        selected_source = None
+
+        if WANTED_RESOLUTION_PREFERENCE == 'exact':
+            if sources[0]['resolution_diff'] == 0:
+                selected_source = sources[0]
+        elif WANTED_RESOLUTION_PREFERENCE == 'closest' or len(sources) == 1:
+            selected_source = sources[0]
+        elif WANTED_RESOLUTION_PREFERENCE == 'exact_or_least_higher':
+            for source in sources:
+                if source['resolution_diff'] >= 0:
+                    selected_source = source
+                    break
+        elif WANTED_RESOLUTION_PREFERENCE == 'exact_or_highest_lower':
+            for source in sources:
+                if source['resolution_diff'] <= 0:
+                    selected_source = source
+                    break
+        else:
+            return None
+
+        return selected_source
+
+    def _select_preferred_variant(self, sources):
+        inspected_sources = sources
+        if STRIPCHAT_PREFER_FMP4:
+            inspected_sources = [self._inspect_variant_playlist(source) for source in inspected_sources]
+
+        preferred_sources = inspected_sources
+        if STRIPCHAT_PREFER_AV1:
+            av1_sources = [source for source in preferred_sources if self._is_av1_variant(source)]
+            if av1_sources:
+                preferred_sources = av1_sources
+                self.debug('Preferring AV1 StripChat variant')
+
+        if STRIPCHAT_PREFER_FMP4:
+            fmp4_sources = [source for source in preferred_sources if source.get('is_fmp4')]
+            if fmp4_sources:
+                preferred_sources = fmp4_sources
+                self.debug('Preferring fMP4 StripChat variant')
+
+        selected_source = self._select_source_for_resolution(preferred_sources)
+        if selected_source is not None:
+            return selected_source
+
+        if preferred_sources is not inspected_sources:
+            self.logger.warning('Preferred StripChat variant was not available at the requested resolution, falling back')
+            return self._select_source_for_resolution(inspected_sources)
+
+        return None
 
     def getPlaylistVariants(self, url):
         url = "https://edge-hls.{host}/hls/{id}{vr}/master/{id}{vr}{auto}.m3u8".format(
@@ -150,7 +260,10 @@ class StripChat(RoomIdBot):
             self.log(f'Failed to get mouflon decryption key')
             return []
         variants = super().getPlaylistVariants(m3u_data=m3u8_doc)
-        return [variant | {'url': f'{variant["url"]}{"&" if "?" in variant["url"] else "?"}psch={psch}&pkey={pkey}'}
+        return [variant | {
+                    'url': f'{variant["url"]}{"&" if "?" in variant["url"] else "?"}psch={psch}&pkey={pkey}',
+                    'master_url': url
+                }
                 for variant in variants]
 
     @staticmethod
