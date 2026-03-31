@@ -7,13 +7,13 @@ import requests
 import base64
 import hashlib
 import m3u8
-from urllib.parse import urljoin
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 from streamonitor.bot import RoomIdBot
 from streamonitor.downloaders.hls import getVideoAdaptiveHLS, getVideoNativeHLS
 from streamonitor.enums import Status, Gender, COUNTRIES
 from parameters import DEBUG
-from parameters import STRIPCHAT_COOKIE, STRIPCHAT_PREFER_AV1, STRIPCHAT_PREFER_FMP4, STRIPCHAT_RECORD_PRIVATE, STRIPCHAT_ADAPTIVE_SWITCH, STRIPCHAT_ADAPTIVE_SWITCH_INTERVAL, WANTED_RESOLUTION, WANTED_RESOLUTION_PREFERENCE
+from parameters import STRIPCHAT_COOKIE, STRIPCHAT_SITE_URL, STRIPCHAT_PREFER_AV1, STRIPCHAT_PREFER_FMP4, STRIPCHAT_RECORD_PRIVATE, STRIPCHAT_ADAPTIVE_SWITCH, STRIPCHAT_ADAPTIVE_SWITCH_INTERVAL, STRIPCHAT_PRIVATE_ACL_AUTH, STRIPCHAT_PRIVATE_PLAYLIST_TYPE, WANTED_RESOLUTION, WANTED_RESOLUTION_PREFERENCE
 
 
 class StripChat(RoomIdBot):
@@ -33,6 +33,7 @@ class StripChat(RoomIdBot):
         'male': Gender.MALE,
         'maleFemale': Gender.BOTH
     }
+    _site_url = STRIPCHAT_SITE_URL.rstrip('/')
 
     if os.path.exists(_mouflon_cache_filename):
         with open(_mouflon_cache_filename) as f:
@@ -57,8 +58,8 @@ class StripChat(RoomIdBot):
         self.vr = False
         self._recording_master_url = None
         self.record_private = STRIPCHAT_RECORD_PRIVATE
-        self.headers['Origin'] = 'https://stripchat.com'
-        self.headers['Referer'] = self.getWebsiteURL()
+        self.headers['Origin'] = self._site_url
+        self.headers['Referer'] = self._site_url + '/'
         self.session.headers.update({
             'Origin': self.headers['Origin'],
             'Referer': self.headers['Referer'],
@@ -152,15 +153,36 @@ class StripChat(RoomIdBot):
         return None, None, None
 
     def getWebsiteURL(self):
-        return "https://stripchat.com/" + self.username
+        return self._site_url + "/" + self.username
+
+    @staticmethod
+    def _with_query_params(url, extra_query):
+        if not extra_query:
+            return url
+        url_parts = urlsplit(url)
+        query = dict(parse_qsl(url_parts.query, keep_blank_values=True))
+        query.update({key: value for key, value in extra_query.items() if value not in (None, '')})
+        return urlunsplit(url_parts._replace(query=urlencode(query)))
+
+    def _private_media_query_params(self):
+        if self.lastInfo.get('model', {}).get('status') not in self._PRIVATE_STATUSES:
+            return {}
+
+        extra_query = {}
+        if STRIPCHAT_PRIVATE_ACL_AUTH:
+            extra_query['aclAuth'] = STRIPCHAT_PRIVATE_ACL_AUTH
+        if STRIPCHAT_PRIVATE_PLAYLIST_TYPE:
+            extra_query['playlistType'] = STRIPCHAT_PRIVATE_PLAYLIST_TYPE
+        return extra_query
 
     def _build_master_playlist_url(self):
-        return "https://edge-hls.{host}/hls/{id}{vr}/master/{id}{vr}{auto}.m3u8".format(
+        url = "https://edge-hls.{host}/hls/{id}{vr}/master/{id}{vr}{auto}.m3u8".format(
             host='doppiocdn.' + random.choice(['org', 'com', 'net']),
             id=self.room_id,
             vr='_vr' if self.vr else '',
             auto='_auto' if not self.vr else ''
         )
+        return self._with_query_params(url, self._private_media_query_params())
 
     def _format_selected_source(self, selected_source):
         width, height = selected_source['resolution']
@@ -175,6 +197,7 @@ class StripChat(RoomIdBot):
     def _finalize_selected_source(self, selected_source, log_selection=True):
         finalized_source = dict(selected_source)
         finalized_source['url'] = urljoin(finalized_source['master_url'], finalized_source['url'])
+        finalized_source['url'] = self._with_query_params(finalized_source['url'], self._private_media_query_params())
         self._recording_master_url = finalized_source['master_url']
         if log_selection:
             self.logger.info(f"Selected {self._format_selected_source(finalized_source)}")
