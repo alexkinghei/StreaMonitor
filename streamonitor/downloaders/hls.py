@@ -27,6 +27,29 @@ if not _http_lib:
     raise ImportError("Please install requests or pycurl package to proceed")
 
 
+def _create_download_session(self):
+    session = requests.Session()
+    if hasattr(self, 'headers') and isinstance(self.headers, dict):
+        session.headers.update(self.headers)
+
+    source_session = getattr(self, 'session', None)
+    source_cookies = getattr(source_session, 'cookies', None)
+    if source_cookies is not None:
+        try:
+            session.cookies.update(source_cookies)
+        except Exception:
+            pass
+
+    extra_cookies = getattr(self, 'cookies', None)
+    if extra_cookies is not None:
+        try:
+            session.cookies.update(extra_cookies)
+        except Exception:
+            pass
+
+    return session
+
+
 def _get_filename_suffix(self):
     if hasattr(self, 'filename_extra_suffix'):
         return self.filename_extra_suffix
@@ -145,7 +168,7 @@ def _resolve_chunk_uri(playlist_url, chunk_uri):
 def getVideoNativeHLS(self, url, filename, m3u_processor=None):
     self.stopDownloadFlag = False
     error = False
-    session = requests.Session()
+    session = _create_download_session(self)
 
     def execute():
         nonlocal error
@@ -239,7 +262,7 @@ def getVideoNativeHLS(self, url, filename, m3u_processor=None):
 def getVideoAdaptiveHLS(self, url, filename, m3u_processor=None, variant_selector=None, switch_check_interval=15):
     self.stopDownloadFlag = False
     error = False
-    session = requests.Session()
+    session = _create_download_session(self)
     basefilename = filename[:-len('.' + CONTAINER)]
     parts_dir = basefilename + '.parts'
     os.makedirs(parts_dir, exist_ok=True)
@@ -284,6 +307,13 @@ def getVideoAdaptiveHLS(self, url, filename, m3u_processor=None, variant_selecto
         try:
             while not self.stopDownloadFlag:
                 now = monotonic()
+                source_session = getattr(self, 'session', None)
+                source_cookies = getattr(source_session, 'cookies', None)
+                if source_cookies is not None:
+                    try:
+                        session.cookies.update(source_cookies)
+                    except Exception:
+                        pass
                 if variant_selector is not None and (current_variant_info is None or now - last_switch_check >= switch_check_interval):
                     candidate_variant = variant_selector()
                     last_switch_check = now
