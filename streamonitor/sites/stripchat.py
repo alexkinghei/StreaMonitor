@@ -12,7 +12,7 @@ from urllib.parse import urljoin
 from streamonitor.bot import RoomIdBot
 from streamonitor.downloaders.hls import getVideoAdaptiveHLS, getVideoNativeHLS
 from streamonitor.enums import Status, Gender, COUNTRIES
-from parameters import STRIPCHAT_COOKIE, STRIPCHAT_PREFER_AV1, STRIPCHAT_PREFER_FMP4, STRIPCHAT_ADAPTIVE_SWITCH, STRIPCHAT_ADAPTIVE_SWITCH_INTERVAL, WANTED_RESOLUTION, WANTED_RESOLUTION_PREFERENCE
+from parameters import STRIPCHAT_COOKIE, STRIPCHAT_PREFER_AV1, STRIPCHAT_PREFER_FMP4, STRIPCHAT_RECORD_PRIVATE, STRIPCHAT_ADAPTIVE_SWITCH, STRIPCHAT_ADAPTIVE_SWITCH_INTERVAL, WANTED_RESOLUTION, WANTED_RESOLUTION_PREFERENCE
 
 
 class StripChat(RoomIdBot):
@@ -55,6 +55,7 @@ class StripChat(RoomIdBot):
         self._id = None
         self.vr = False
         self._recording_master_url = None
+        self.record_private = STRIPCHAT_RECORD_PRIVATE
         if STRIPCHAT_COOKIE:
             self.headers['Cookie'] = STRIPCHAT_COOKIE
             self.session.headers.update({'Cookie': STRIPCHAT_COOKIE})

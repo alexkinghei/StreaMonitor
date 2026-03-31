@@ -27,6 +27,7 @@ class Bot(Thread):
     aliases = []
     ratelimit = False
     bulk_update = False
+    record_private = False
 
     sleep_on_private = 5
     sleep_on_offline = 5
@@ -196,10 +197,10 @@ class Bot(Thread):
                             self.sc = Status.LONG_OFFLINE
                     elif self.sc == Status.PUBLIC or self.sc == Status.PRIVATE:
                         offline_time = 0
-                        if self.sc == Status.PUBLIC:
+                        if self.sc == Status.PUBLIC or (self.sc == Status.PRIVATE and self.record_private):
                             if self.cookie_update_interval > 0 and self.cookieUpdater is not None:
                                 def update_cookie():
-                                    while self.sc == Status.PUBLIC and not self.quitting and self.running:
+                                    while self.sc in (Status.PUBLIC, Status.PRIVATE) and not self.quitting and self.running:
                                         self._sleep(self.cookie_update_interval)
                                         ret2 = self.cookieUpdater()
                                         if ret2:
